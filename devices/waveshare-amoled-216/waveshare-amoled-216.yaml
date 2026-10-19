@@ -1,0 +1,2244 @@
+# Waveshare ESP32-S3-Touch-AMOLED-2.16
+#
+# Device package - install it from the irabelle-esphome-devices repository:
+# https://github.com/notf0und/irabelle-esphome-devices
+#
+# Everything below has defaults; set the substitutions to match your device.
+substitutions:
+  # --- set these (only `name` really has to be unique) ----------------------
+  name: waveshare-amoled-216              # hostname / mDNS name
+  friendly_name: Waveshare AMOLED 2.16    # device name in Home Assistant
+  friendly_name_slug: waveshare_amoled_2_16  # entity_id prefix; match friendly_name
+  id: waveshare_amoled_216                # YAML / C++ id prefix
+  name_add_mac_suffix: false
+  # -------------------------------------------------------------------------
+
+  # Microphone streaming target. Only used by the "Stream Audio" switch; both
+  # are editable from Home Assistant at runtime, so this is just the default.
+  stream_ip: "127.0.0.1"
+  stream_port: 5005
+audio_file:
+  - id: intro_audio
+    file: sounds/intro.flac
+  - id: wake_word_audio
+    file: sounds/wake_word.flac
+  - id: timer_finished_sound
+    file: sounds/timer_finished.flac
+
+
+packages:
+  base: !include
+    file: ../../packages/common/wireless-base.yaml
+  waveshare-amoled-216: !include
+    file: ../../packages/devices/waveshare/AMOLED-2.16.yaml
+  # ── Apps ──────────────────────────────────────────────────────────────────
+  # Each app is a self-contained package: its own LVGL pages, its tile on the
+  # Apps screen and its own entities. Comment/remove a line to remove the app;
+  # with no apps included the Apps screen is not reachable at all.
+  radio_app: !include
+    file: apps/lvgl/radio.yaml
+  waveshare_settings: !include
+    file: apps/waveshare/settings.yaml
+  # Optional audio tuning knobs + diagnostics (AEC gain/NLP, AFE type/NS/AGC,
+  # barge-in level, RMS readouts) live in a separate package - see
+  # docs/waveshare-amoled-216.md#tuning-the-audio-front-end
+
+
+wifi:
+  power_save_mode: none  # Disable power saving for better performance
+  reboot_timeout: 10min  # Prevent unnecessary reboots
+
+# Template sensor to determine device rotation based on accelerometer
+globals:
+   - id: device_rotation
+     type: int
+     initial_value: '0'
+
+   - id: last_lvgl_rotation  # Track last sent rotation
+     type: int
+     initial_value: '0'
+
+   - id: status_line_pulsing  # Track if status_line is currently pulsing
+     type: bool
+     initial_value: 'false'
+
+   - id: status_line_opa  # Current opacity for pulsing animation
+     type: uint8_t
+     initial_value: '255'
+
+   - id: battery_icon_animating
+     type: bool
+     initial_value: 'false'
+
+   # ES7210 analog mic gain (dB). Mirrors the audio_adc `mic_gain` default and
+   # is the primary input-level knob; tune it before touching post-AEC gain.
+   # millis() when the current spoken answer started (barge-in is disarmed for
+   # the first BARGE_IN_GUARD_MS of playback, because the AEC needs ~1 s to
+   # converge on a new burst and that transient would otherwise stop the answer
+   # by itself - measured 10 457 RMS residual at 1 kHz-tone onset).
+   - id: tts_start_ms
+     type: uint32_t
+     restore_value: no
+     initial_value: '0'
+
+   - id: aec_gain_db
+     type: float
+     restore_value: yes
+     initial_value: '8.0'
+
+   # 0 = normal, 1 = aggressive, 2 = very_aggressive. The optional
+   # "AEC NLP Level" select in waveshare-advanced-audio.yaml writes here; the
+   # boot lambda below applies it, so removing that file keeps the last value.
+   - id: aec_nlp_level
+     type: int
+     restore_value: yes
+     initial_value: '1'
+
+   - id: mic_analog_gain_db
+     type: float
+     initial_value: '30.0'
+
+   - id: va_active
+     type: bool
+     initial_value: 'false'
+
+   - id: client_connected
+     type: bool
+     initial_value: 'false'
+
+   - id: wake_word_enabled
+     type: bool
+     restore_value: yes
+     initial_value: 'true'
+
+   - id: timer_seconds_left
+     type: int
+     initial_value: '0'
+
+   - id: timer_total_seconds
+     type: int
+     initial_value: '0'
+
+   - id: timer_active
+     type: bool
+     initial_value: 'false'
+
+   - id: timer_ringing
+     type: bool
+     initial_value: 'false'
+
+   - id: last_brightness_pct
+     type: int
+     initial_value: '-1'
+
+   - id: always_on_display
+     type: bool
+     restore_value: yes
+     initial_value: 'true'
+
+   - id: volume_popup_dismiss_at
+     type: unsigned long
+     initial_value: '0'
+
+   - id: show_request_text
+     type: bool
+     restore_value: yes
+     initial_value: 'true'
+
+   - id: show_response_text
+     type: bool
+     restore_value: yes
+     initial_value: 'true'
+
+   - id: request_full_text
+     type: std::string
+     initial_value: ''
+
+   - id: response_full_text
+     type: std::string
+     initial_value: ''
+
+   # ── Voice caption sync ───────────────────────────────────────────────────
+   # The response text used to be paged out on a fixed wall-clock timer (30
+   # chars every 4 s). That could not stay in step with the voice: the TTS text
+   # arrives in one piece, sometimes before and sometimes after the audio
+   # starts, and the audio path buffers ~1 s in front of the DAC. Captions are
+   # now advanced from the speaker's real playback clock
+   # (WaveshareDuplexSpeaker::get_played_frames()) and show one sentence of the
+   # response at a time, so the text tracks what is actually being spoken.
+   - id: caption_active          # a TTS response is being captioned
+     type: bool
+     initial_value: 'false'
+
+   - id: caption_epoch_valid     # playback-clock origin has been latched
+     type: bool
+     initial_value: 'false'
+
+   - id: caption_epoch_frames    # speaker frames when the audio actually started
+     type: uint64_t
+     initial_value: '0'
+
+   - id: caption_rate_mcps       # speaking rate, milli-chars/s (self-calibrating)
+     type: int
+     restore_value: yes
+     initial_value: '14000'
+
+   - id: caption_lead_ms         # constant trim for pipeline/start latency
+     type: int
+     restore_value: yes
+     initial_value: '400'
+
+   - id: caption_last_start      # last rendered sentence span (avoids LVGL churn)
+     type: int
+     initial_value: '-1'
+
+   - id: caption_last_end
+     type: int
+     initial_value: '-1'
+
+   - id: caption_span_text
+     type: std::string
+     initial_value: ''
+
+   - id: caption_changed
+     type: bool
+     initial_value: 'false'
+
+   # millis() deadline after which the response caption is cleared. Set once the
+   # announcement has stopped feeding the speaker, as "now + whatever is still
+   # queued in the output ring": the media player calls the announcement finished
+   # while up to a second of audio is still buffered ahead of the DAC, and hiding
+   # on that signal cleared the text before the voice had actually stopped.
+   # 0 = no pending hide.
+   - id: caption_hide_at
+     type: uint32_t
+     initial_value: '0'
+
+esp32:
+  board: esp32-s3-devkitc-1
+  cpu_frequency: 240MHz
+  variant: esp32s3
+  flash_size: 16MB
+
+  # Custom partition table: 2 MB `model` partition at 0xD90000 for the ESP-SR
+  # models. Installing it needs ONE USB flash of the factory image plus
+  # srmodels.bin - see docs/waveshare-amoled-216.md. OTA updates keep working
+  # afterwards and never touch the model or nvs partitions.
+  # Flashing only the app (normal `esphome upload`) would land in the old slot
+  # layout, so do the USB flash first. No-USB alternative: delete this line and
+  # run `scripts/pack-models.sh --emit-blob` so the models travel in the app.
+  # Local copy of partitions.csv - ESPHome resolves it next to this file
+  # (it ships in this repository) or, failing that, in your config directory.
+  # See docs/waveshare-amoled-216.md for the one-time USB flash it requires.
+  partitions: partitions.csv
+
+  # ── ESP-SR model partition (NSNet2 noise suppression / VADNet) ─────────────
+  # 2 MB "model" partition (partitions.csv) holding the raw srmodels.bin that
+  # esp-sr memory-maps. micro_wake_word keeps its own wake word — that lives in
+  # the app and is completely unaffected.
+
+  framework:
+    type: esp-idf
+    version: recommended
+    components:
+
+      - espressif/esp-sr==2.4.3
+    sdkconfig_options:
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB: "y"
+
+      # Considerably speeds up mWW at the cost of using more PSRAM.
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+
+      CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST: "y"
+      CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY: "y"
+
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+      CONFIG_MBEDTLS_SSL_PROTO_TLS1_3: "y"  # TLS1.3 support isn't enabled by default in IDF 5.1.5
+
+      # Increase LWIP max sockets to avoid exhaustion when radio + TTS simultaneously
+      CONFIG_LWIP_MAX_SOCKETS: "40"
+      CONFIG_LWIP_MAX_ACTIVE_TCP: "40"
+
+      # ── PSRAM as a real heap (internet-radio crash fix) ────────────────────
+      # ESPHome's `psram` component selects CONFIG_SPIRAM_USE_CAPS_ALLOC, which
+      # means plain malloc/calloc/new never touch PSRAM: everything the IDF and
+      # its libraries allocate through the default heap lands in internal DRAM.
+      # Measured on this board while an MP3 stream plays: internal free ~11 kB
+      # and the *largest contiguous internal block ~7.6 kB*, while PSRAM still
+      # had megabytes free. That broke radio playback in two ways:
+      #   * opening an https:// stream needs mbedtls' ~16 KiB SSL in-buffer plus
+      #     a ~4 KiB out-buffer in one contiguous internal block ->
+      #     `esp-tls: Failed to open new connection` / ESP_ERR_HTTP_CONNECT;
+      #   * the 2 MB media ring buffer plus the 24 kB reader/decoder transfer
+      #     buffers drained PSRAM, so the physical speaker's 192 kB output ring
+      #     buffer fell back to internal DRAM, failed to allocate, and the mixer
+      #     hot-spun into a task-watchdog reset.
+      # CONFIG_SPIRAM_USE_MALLOC makes malloc/calloc prefer PSRAM for anything
+      # larger than SPIRAM_MALLOC_ALWAYSINTERNAL, so those big transient buffers
+      # go to PSRAM and internal DRAM stays available for DMA/interrupt work.
+      # The media ring buffer below is also reduced (2 MB -> 512 kB) so PSRAM
+      # keeps a healthy reserve. Recovery if this ever boot-loops: the
+      # bootloader has app rollback enabled, `safe mode`/OTA re-flash works over
+      # WiFi, and the board is on USB (/dev/ttyUSB0) via scripts/flash-usb.sh.
+      # NOTE: psram's to_code() runs after the user options and re-adds
+      # CONFIG_SPIRAM_USE_CAPS_ALLOC=y; the options are written sorted, so
+      # MALLOC (later alphabetically) wins the Kconfig choice. Verified in the
+      # built sdkconfig.
+      CONFIG_SPIRAM: "y"
+      CONFIG_SPIRAM_MODE_OCT: "y"
+      CONFIG_SPIRAM_SPEED_80M: "y"
+      CONFIG_SPIRAM_USE_MALLOC: "y"
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "2048"
+      CONFIG_SPIRAM_MEMTEST: "n"
+
+esphome:
+  id: ${id}
+  name: ${name}
+  min_version: 2026.8.0
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: ${name_add_mac_suffix}
+  on_boot:
+    - priority: 800
+      then:
+        - switch.turn_on: ${id}_pa_ctrl_switch
+        - pcf85063.read_time  # Read RTC on boot
+
+    # The AEC NLP select restores its UI value but a template select does NOT
+    # re-run set_action on restore, so push the restored value into the
+    # component explicitly (otherwise the UI shows one level and the DSP uses
+    # another).
+    - priority: 400
+      then:
+        - lambda: |-
+            // Post-AFE gain drives both micro_wake_word and the STT stream; it
+            // is restored from flash, so push it into the component at boot.
+            id(${id}_microphone)->set_aec_gain(id(aec_gain_db));
+            ESP_LOGI("boot", "AEC Gain applied from restored global: %.1f", id(aec_gain_db));
+
+            // 0 = normal, 1 = aggressive, 2 = very_aggressive
+            id(${id}_microphone)->set_aec_nlp(id(aec_nlp_level));
+            ESP_LOGI("boot", "AEC NLP applied from restored global: %d", id(aec_nlp_level));
+
+    - priority: 375
+      then:
+        - script.execute: wake_display
+        - lvgl.page.show:
+            lvgl_id: ${id}_lvgl
+            id: loading_page
+        - script.execute: update_time
+
+        - lvgl.widget.update:
+            id: always_on_screen_switch
+            state:
+              checked: !lambda 'return id(always_on_display);'
+
+        - lvgl.widget.update:
+            id: show_request_text_switch
+            state:
+              checked: !lambda 'return id(show_request_text);'
+
+        - lvgl.widget.update:
+            id: show_response_text_switch
+            state:
+              checked: !lambda 'return id(show_response_text);'
+
+        - lvgl.slider.update: # Sync lvgl brightness slider with display_backlight
+            id: display_page_brightness_slider
+            value: !lambda 'return (int)(id(${id}_display_backlight).current_values.get_brightness() * 100);'
+
+        - media_player.turn_on: ${id}_media_player
+
+        - lvgl.slider.update: # Sync lvgl volume slider with media player volume
+            id: sound_page_volume_slider
+            value: !lambda 'return (int)(id(${id}_media_player).volume * 100);'
+
+
+        - lvgl.slider.update: # Sync lvgl volume slider with media player volume
+            id: volume_slider
+            value: !lambda 'return (int)(id(${id}_media_player).volume * 100);'
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+#---------------- AUDIO ----------------#
+# Codec support for the `speaker` media player's pipeline. Media and
+# announcements arrive as URLs (HA forwards them, including internet-radio
+# stations), and the on-device reader decodes them with the legacy
+# audio::AudioDecoder.
+#
+# Decoder truth (ESPHome 2026.8.2, components/audio/__init__.py): the firmware
+# can decode MP3, FLAC, Ogg Opus and WAV — each enabled by the matching key
+# here. It can NOT decode AAC / AAC+ / HE-AAC (no decoder exists in ESPHome at
+# all), HLS playlists (a manifest, not a file) or Ogg Vorbis (ESPHome always
+# forces CONFIG_MICRO_DECODER_CODEC_VORBIS=False). FLAC was already pulled in by
+# the FLAC announcement pipeline; mp3/opus/wav are explicit radio additions.
+audio:
+  codecs:
+    mp3:
+    flac:
+    opus:
+      # Keep Opus state in PSRAM: internal DRAM is the scarce resource here.
+      state_memory: psram
+    wav:
+
+# I2C Bus (RTC, IMU, ES8311 control)
+i2c:
+  id: ${id}_i2c
+  sda: GPIO15
+  scl: GPIO14
+  scan: true
+  frequency: 400kHz
+
+# Duplex I2S: ESP32 master drives BCLK/LRCK/MCLK from boot.
+# TX → standard I2S → ES8311 (speaker/DAC)
+# RX → TDM 4-slot   → ES7210 (microphone/ADC)
+# ES7210 TDM slot order is MIC1, MIC3, MIC2, MIC4: slot 0 = board mic,
+# slot 1 = MIC3 = hardware echo reference (speaker amp → on-board AEC divider).
+# The I2C handle is only used to flip the ES7210 into TDM mode (ESPHome's own
+# es7210 driver forces 2-slot I2S mode).
+# Both channels enabled immediately so wake word works without prior playback.
+waveshare_duplex_audio:
+  id: ${id}_duplex_audio
+  i2c_id: ${id}_i2c
+  mclk_pin: 42
+  bclk_pin: 9
+  lrck_pin: 45
+  dout_pin: 8
+  din_pin: 10
+  pa_pin: 46
+  # 48 kHz on the shared BCLK/LRCK bus: the ES8311 plays at 48 kHz and the
+  # ES7210 samples at 48 kHz. The mic task decimates 3:1 back to 16 kHz for the
+  # AFE / micro_wake_word, so the voice stack still sees exactly what it did
+  # before. Set back to 16000 to return to the original narrowband bus.
+  sample_rate: 48000
+
+
+# Audio Digital to Analogic Converter (Speaker) — ES8311 as I2S slave
+audio_dac:
+  - platform: es8311
+    id: ${id}_audio_dac
+    i2c_id: ${id}_i2c
+    use_mclk: true
+    sample_rate: 48000
+    bits_per_sample: 16bit
+
+# Audio Analogic to Digital Converter (Microphone) — ES7210 I2C init (gain/rate)
+audio_adc:
+  - platform: es7210
+    id: ${id}_audio_adc
+    i2c_id: ${id}_i2c
+    sample_rate: 48000
+    bits_per_sample: 16bit
+    # Analog PGA gain applied before the ADC (0-37.5 dB). This is the right
+    # place to add level: digital post-gain only amplifies quantisation noise.
+    # Tune live with the "Mic Analog Gain" number; keep the two in sync.
+    mic_gain: 30
+
+# Microphone via duplex I2S TDM (reads ES7210 slot 0 = MIC1)
+stream_microphone:
+  id: ${id}_stream
+  ip_address: ${stream_ip}
+  port: ${stream_port}
+  gain_factor: 1
+
+microphone:
+  - platform: waveshare_duplex_audio
+    id: ${id}_microphone
+    waveshare_duplex_audio_id: ${id}_duplex_audio
+    # Voice-stack rate. Stays 16 kHz: this is what the AFE, micro_wake_word and
+    # the STT stream consume, and the mic task decimates the 48 kHz bus down to it.
+    sample_rate: 16000
+    # Post-AFE software gain (start value; the HA number + restored global win).
+    # The AFE runs WITHOUT AGC by default (like the vendor firmware), so this is
+    # the knob that sets the level for the wake word and for STT.
+    aec_gain: 8.0
+    aec_nlp: aggressive
+    on_data:
+      - lambda: |-
+          if (id(stream_audio).state) {
+            id(${id}_stream).send(x);
+          }
+
+# Physical I2S Speaker Output (writes to always-on TX handle)
+speaker:
+  - platform: waveshare_duplex_audio
+    id: ${id}_speaker
+    waveshare_duplex_audio_id: ${id}_duplex_audio
+    audio_dac: ${id}_audio_dac
+    # Playback rate of the physical output. 48 kHz means the mixer and every
+    # resampler below run at 48 kHz, so radio (44.1 kHz MP3) and HA media are no
+    # longer squashed to 16 kHz.
+    sample_rate: 48000
+    buffer_duration: 1000ms
+
+  - platform: mixer
+    id: ${id}_mixer
+    output_speaker: ${id}_speaker
+    num_channels: 2
+    task_stack_in_psram: true
+    source_speakers:
+      - id: ${id}_announcement_speaker
+        timeout: never
+
+      - id: ${id}_media_speaker
+        timeout: never
+
+
+
+  - platform: resampler
+    id: ${id}_announcement_resampler_speaker
+    output_speaker: ${id}_announcement_speaker
+    
+  - platform: resampler
+    id: ${id}_media_resampler_speaker
+    output_speaker: ${id}_media_speaker
+
+# Media Player (uses mixer's separate speakers)
+media_player:
+  - platform: speaker
+    id: ${id}_media_player
+    name: Media Player
+    # Raw (still compressed) stream bytes buffered between the HTTP reader and
+    # the decoder. This is NOT decoded audio: 512 kB is ~32 s of a 128 kbps MP3,
+    # far more than any network jitter needs. It used to be 2 MB, which ate all
+    # but ~50 kB of the 2.36 MB free PSRAM and starved the physical speaker's
+    # 192 kB output ring buffer -> OOM -> mixer hot-spin -> task watchdog reset
+    # when a station was started (worst on the first play after boot, which is
+    # exactly when the output ring is allocated).
+    buffer_size: 512000
+    # Decoder task stack in PSRAM instead of internal DRAM (the reader task
+    # stays internal on purpose - see audio_pipeline.cpp start_tasks_()).
+    task_stack_in_psram: true
+
+    volume_min: 0.4
+    volume_max: 0.85
+    volume_increment: 0.05
+    announcement_pipeline:
+      speaker: ${id}_announcement_resampler_speaker
+      format: FLAC
+      sample_rate: 16000
+      num_channels: 1
+
+      
+    media_pipeline:
+      speaker: ${id}_media_resampler_speaker
+      format: FLAC
+      # Advertised to HA so media HA fetches/transcodes for this player is 48 kHz
+      # like the DAC. URL radio is decoded on-device and is unaffected by this.
+      sample_rate: 48000
+
+    on_state:
+      - logger.log: "MEDIA_PLAYER: state"
+      # Status label only. This fires on every volume step as well, and a full
+      # list repaint here starved the main loop and froze the UI.
+      - script.execute: radio_status_update
+    on_play:
+      - logger.log: "MEDIA_PLAYER: on_play"
+    on_pause:
+      - logger.log: "MEDIA_PLAYER: on_pause"
+    on_idle:
+      - logger.log: "MEDIA_PLAYER: on_idle"
+    on_announcement:
+      - logger.log: "MEDIA_PLAYER: on_announcement"
+    on_turn_off:
+      - logger.log: "MEDIA_PLAYER: on_turn_off"
+    on_turn_on:
+      - logger.log: "MEDIA_PLAYER: on_turn_on"
+    on_volume:
+      - logger.log: 
+          format: "MEDIA_PLAYER: on_volume changed to: %f"
+          args: ['x']
+      - lambda: |-
+          int val = (int)(x * 100);
+          lv_slider_set_value(id(volume_slider), val, LV_ANIM_OFF);
+          lv_slider_set_value(id(sound_page_volume_slider), val, LV_ANIM_OFF);
+
+#---------------- INTERNET RADIO ----------------#
+# Station directory comes from radio-browser.info (same data HA's radio_browser
+# integration uses). sh_radio owns the station data and the favourites list; the
+# GET is done inside the C++ component so the response body can live in PSRAM.
+#
+# Playback ALWAYS goes through Home Assistant (see radio_play_via_ha): the
+# component fires on_ha_play for every station, the YAML calls HA's
+# media_player.play_media, and HA's ESPHome integration proxies the stream
+# through its own ffmpeg as FLAC 48 kHz. That is why there is no codec probe, no
+# "unsupported codec" path and no on-device codec filter any more.
+switch:
+  # Wake-word mute, the same flag the PWRON short-click toggles and the display
+  # shows as a red bar. It is restored from flash, so without this switch a mute
+  # could only be undone by pressing the device.
+  - platform: template
+    name: "Wake Word"
+    id: ${id}_wake_word_switch
+    icon: mdi:microphone
+    optimistic: true
+    restore_mode: DISABLED
+    turn_on_action:
+      - script.execute: start_wake_word
+    turn_off_action:
+      - script.execute: stop_wake_word
+    lambda: 'return id(wake_word_enabled);'
+  - platform: gpio
+    pin: GPIO46
+    name: "Power Amplifier"
+    id: ${id}_pa_ctrl_switch
+    restore_mode: ALWAYS_ON
+    internal: true
+
+  - platform: template
+    name: Stream Audio
+    id: stream_audio
+    restore_mode: ALWAYS_OFF
+    optimistic: true
+    icon: mdi:record-rec
+    turn_on_action:
+      then:
+        - microphone.capture: ${id}_microphone
+    turn_off_action:
+      then:
+        - microphone.stop_capture: ${id}_microphone
+
+  # Battery charging control (AXP2101 CHG_EN, reg 0x18 bit1).
+  # Used by the "Waveshare AMOLED 2.16 Battery manager" HA automation to keep
+  # the battery between 65% and 75%:
+  #   ON  -> charging enabled  (battery charges from USB)
+  #   OFF -> charging disabled (device keeps running from USB, battery rests)
+  # Restores its last state across reboots so a reboot above 75% does not
+  # re-enable charging.
+  - platform: axp2101
+    axp2101_id: axp2101_pmu
+    charging_enabled:
+      name: "Charging Enabled"
+      id: ${id}_charging_enabled
+      restore_mode: RESTORE_DEFAULT_ON
+      entity_category: config
+
+#---------------- DISPLAY ----------------#
+
+# SPI Buses Configuration
+spi:
+  # SPI Bus 1 - SD Card
+  - id: spi_sd
+    clk_pin: GPIO2
+    mosi_pin: GPIO1
+    miso_pin: GPIO3
+    interface: hardware
+    
+
+  # SPI Bus 2 - AMOLED Display (quad SPI)
+  - id: spi_lcd
+    type: quad
+    clk_pin: GPIO38
+    data_pins:
+      - GPIO4
+      - GPIO5
+      - GPIO6
+      - GPIO7
+    interface: hardware
+
+# AMOLED Display Configuration
+display:
+  - platform: mipi_spi
+    id: ${id}_display
+    spi_id: spi_lcd
+    model: WAVESHARE-ESP32-S3-TOUCH-AMOLED-2.16
+
+    auto_clear_enabled: false
+    update_interval: never
+
+# Capacitive Touch - CST9220 (built-in; board controller is CST92xx)
+touchscreen:
+  - platform: cst9220
+    id: ${id}_touchscreen
+    display: ${id}_display
+    interrupt_pin: GPIO11
+    reset_pin: GPIO40
+    address: 0x5A
+    calibration:
+      x_min: 0
+      x_max: 480
+      y_min: 0
+      y_max: 480
+    on_touch:
+      - script.execute: wake_display
+
+# Define a font for text display
+font:
+  - file: 'gfonts://Playwrite+BR'
+    id: gfont_playwrite_br
+    size: 24
+
+  - file: "https://cdn.jsdelivr.net/npm/@mdi/font@latest/fonts/materialdesignicons-webfont.ttf"
+    id: mdi_32
+    size: 32
+    bpp: 4
+    glyphs: [
+      '󰖩', # mdi:wifi
+      '󰖪', # mdi:wifi-off
+      '󰕾', # mdi:volume-high
+      '󰃟', # mdi:brightness-6
+      '󰁹', # mdi:battery
+      '󰋽', # mdi:information-outline
+      '󰅂', # mdi:chevron-right
+      '󰅁', # mdi:chevron-left
+      '󰍬', # mdi:microphone
+      '󰢴', # mdi:microphone-plus
+      "󱑕", # mdi:clock-time-eleven-outline
+      "󰒓", # mdi:cog (Settings app tile)
+
+      # ── radio app icons ──────────────────────────────────────────────────
+      "\U000F040A", # mdi:play
+      "\U000F03E4", # mdi:pause
+      "\U000F04DB", # mdi:stop
+      "\U000F04AD", # mdi:skip-next
+      "\U000F04AE", # mdi:skip-previous
+      "\U000F0439", # mdi:radio (F043C is mdi:radioactive - wrong glyph)
+      "\U000F04CE", # mdi:star
+      "\U000F04D2", # mdi:star-outline
+      "\U000F0450", # mdi:refresh
+      "\U000F02D1", # mdi:heart
+      "\U000F0349", # mdi:magnify
+      "\U000F0143", # mdi:chevron-up
+      "\U000F0140", # mdi:chevron-down
+    ]
+
+  # 48 px MDI, for the transport buttons on the radio hero screen. Every
+  # codepoint here is verified against the @mdi/font cmap (see the radio
+  # redesign notes): a glyph that is not in this list renders as nothing.
+  - file: "https://cdn.jsdelivr.net/npm/@mdi/font@latest/fonts/materialdesignicons-webfont.ttf"
+    id: mdi_48
+    size: 48
+    bpp: 4
+    glyphs: [
+      "\U000F040A", # mdi:play
+      "\U000F03E4", # mdi:pause
+      "\U000F04DB", # mdi:stop
+      "\U000F04AD", # mdi:skip-next
+      "\U000F04AE", # mdi:skip-previous
+      "\U000F0141", # mdi:chevron-left
+      "\U000F0142", # mdi:chevron-right
+      "\U000F0143", # mdi:chevron-up
+      "\U000F0140", # mdi:chevron-down
+      "\U000F04CE", # mdi:star
+      "\U000F04D2", # mdi:star-outline
+      "\U000F0450", # mdi:refresh
+      "\U000F0439", # mdi:radio
+    ]
+
+
+  # 64 px MDI: the hero radio glyph (the 128 px one lived inside a 176 px circle
+  # that is gone) and the Apps-page tile icons, which are icon-only now.
+  - file: "https://cdn.jsdelivr.net/npm/@mdi/font@latest/fonts/materialdesignicons-webfont.ttf"
+    id: mdi_64
+    size: 64
+    bpp: 4
+    glyphs: [
+      "\U000F0439", # mdi:radio   (hero glyph + Radio tile)
+      "\U000F0493", # mdi:cog     (Settings tile)
+    ]
+
+
+  - file: "https://cdn.jsdelivr.net/npm/@mdi/font@latest/fonts/materialdesignicons-webfont.ttf"
+    id: mdi_128
+    size: 128
+    bpp: 4
+    glyphs: [
+      # Weather
+      "󰖙", # sunny              / mdi:weather-sunny
+      "󰖔", # clear-night        / mdi:weather-night
+      "󰖐", # cloudy             / mdi:weather-cloudy
+      "󰼯", # exceptional        / mdi:weather-cloudy-alert
+      "󰖑", # fog                / mdi:weather-fog
+      "󰖒", # hail               / mdi:weather-hail
+      "󰖓", # lightning          / mdi:weather-lightning
+      "󰙾", # lightning-rainy    / mdi:weather-lightning-rainy
+      "󰖕", # partlycloudy       / mdi:weather-partly-cloudy
+      "󰼱", # partlycloudy-night / mdi:weather-night-partly-cloudy
+      "󰖖", # pouring            / mdi:weather-pouring
+      "󰖗", # rainy              / mdi:weather-rainy
+      "󰖘", # snowy              / mdi:weather-snowy
+      "󰙿", # snowy-rainy        / mdi:weather-snowy-rainy
+      "󰖝", # windy              / mdi:weather-windy
+      "󰖞", # windy-variant      / mdi:weather-windy-variant
+      "󱓤", # sunny-off          / mdi:weather-sunny-off
+      # Moon
+      '󰽤', # new                / mdi:moon-new
+      '󰽧', # waxing-crescent    / mdi:moon-waxing-crescent
+      '󰽡', # first-quarter      / mdi:moon-first-quarter
+      '󰽨', # waxing-gibbous     / mdi:moon-waxing-gibbous
+      '󰽢', # full               / mdi:moon-full
+      '󰽦', # waning-gibbous     / mdi:moon-waning-gibbous
+      '󰽣', # last-quarter       / mdi:moon-last-quarter
+      '󰽥', # waning-crescent    / mdi:moon-waning-crescent
+
+      # ── radio app: hero disc ─────────────────────────────────────────────
+      "\U000F0439", # radio / mdi:radio (verified against the MDI cmap)
+      ]
+
+output:
+  - platform: template
+    id: display_brightness_output
+    type: float
+    write_action:
+      - lambda: |-
+          uint8_t brightness_value = (uint8_t)(state * 255);
+          id(${id}_display).set_brightness(brightness_value);
+
+light:
+  - platform: monochromatic
+    id: ${id}_display_backlight
+    name: "Display Brightness"
+    icon: "mdi:television"
+    output: display_brightness_output
+    restore_mode: RESTORE_DEFAULT_ON
+    default_transition_length: 250ms
+
+#---------------- RTC ----------------#
+# Real Time Clock (NXP PCF85063A @ 0x51; see schematic "85063A")
+time:
+  - platform: pcf85063
+    id: ${id}_time
+    update_interval: never  # Don't poll constantly
+    on_time:
+    - seconds: 0
+      then:
+        - script.execute: update_time
+           
+  - platform: homeassistant  # Sync from Home Assistant
+    on_time_sync:
+      then:
+        - pcf85063.write_time  # Write synced time back to RTC
+
+
+#---------------- Battery ----------------#
+# AXP2101 Battery Management
+axp2101:
+  id: axp2101_pmu
+  model: WS-S3AMOLED175
+  address: 0x34
+  i2c_id: ${id}_i2c
+  update_interval: 30s
+  # Safety floor: charging cannot be disabled at or below this battery level,
+  # and is re-enabled automatically if the pack drops to it. Protects the
+  # device from being stranded at 0% with charging off (HA-independent).
+  min_charging_level: 10
+
+# QMI8658 6-Axis IMU (I2C at 0x6B) via the built-in motion front-end.
+# acceleration_* in g, gyroscope_* in °/s, pitch/roll in degrees.
+motion:
+  - platform: qmi8658
+    id: ${id}_imu
+    i2c_id: ${id}_i2c
+    accelerometer_range: 4G
+    gyroscope_range: 2048DPS
+    update_interval: 100ms
+
+sensor:
+  # Barge-in: the AFE output is the echo-cancelled signal, so while the speaker
+  # plays the residual sits near zero and any real speech makes it jump. Counting
+  # those rising edges (done in the mic component, free - no VAD model) and
+  # polling them lets a plain template automation stop the announcement without
+  # new entity plumbing. Tune with the "Barge-in Level" number (in
+  # waveshare-advanced-audio.yaml); the component default is 200.
+  - platform: template
+    name: "Barge-in Events"
+    id: ${id}_barge_in_events
+    entity_category: diagnostic
+    internal: true
+    icon: mdi:account-voice
+    update_interval: 250ms
+    accuracy_decimals: 0
+    lambda: 'return (float) id(${id}_microphone)->get_speech_events();'
+    on_value:
+      then:
+        - if:
+            condition:
+              - media_player.is_announcing:
+                  id: ${id}_media_player
+              # Ignore the AEC convergence transient at the start of playback.
+              - lambda: 'return id(tts_start_ms) != 0 && (millis() - id(tts_start_ms)) > 2500;'
+            then:
+              - logger.log: "BARGE-IN: speech during announcement -> stopping TTS"
+              - media_player.stop:
+                  id: ${id}_media_player
+
+  # How many consumers are subscribed to the processed mic stream. 0 means
+  # nothing is reading the microphone at all (mww stopped / no API client).
+  - platform: axp2101
+    axp2101_id: axp2101_pmu
+    battery_voltage:
+      name: "Battery Voltage"
+    battery_level:
+      name: "Battery Level"
+      id: ${id}_battery_level
+      on_value:
+        then:
+          - lvgl.label.update:
+              id: topbar_battery_value
+              text: !lambda 'return to_string((int)x) + "%";'
+    temperature:
+      name: "PMU Temperature"
+    vbus_voltage:
+      name: "USB Voltage"
+
+  # QMI8658 6-Axis IMU — orientation inputs for the rotation detector
+  - platform: motion
+    motion_id: ${id}_imu
+    type: acceleration_x
+    id: ${id}_acceleration_x
+    internal: true
+  - platform: motion
+    motion_id: ${id}_imu
+    type: acceleration_y
+    id: ${id}_acceleration_y
+    internal: true
+  - platform: motion
+    motion_id: ${id}_imu
+    type: acceleration_z
+    id: ${id}_acceleration_z
+    internal: true
+
+  # Radio redesign diagnostics: heap headroom while flipping between stations.
+  # (Min Free is the low-water mark since boot — the useful one for spotting a
+  # leak or an OOM that would look like a lock-up.)
+  - platform: debug
+    free:
+      name: "Heap Free"
+    block:
+      name: "Heap Max Block"
+    min_free:
+      name: "Heap Min Free"
+    psram:
+      name: "PSRAM Free"
+    loop_time:
+      name: "Main Loop Time"
+
+  # PSRAM largest contiguous block. The media pipeline's big buffers come from
+  # PSRAM, so this is the number that has to stay above the next allocation.
+  - platform: template
+    name: "PSRAM Max Block"
+    id: ${id}_psram_max_block
+    unit_of_measurement: "B"
+    entity_category: diagnostic
+    icon: mdi:memory
+    update_interval: 5s
+    lambda: 'return (float) heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);'
+
+  - platform: qmi8658
+    qmi8658_id: ${id}_imu
+    type: temperature
+    id: ${id}_qmi8658_temperature
+    name: "QMI8658 Temperature"
+    # The qmi8658 sensor publishes whenever the motion component polls (100 ms
+    # for the rotation detector), so it cannot be slowed on its own - hide it
+    # instead of filling the logbook with temperature updates.
+    internal: true
+
+  - platform: template
+    name: "Device Rotation"
+    unit_of_measurement: "°"
+    state_class: measurement
+    lambda: |-
+      return id(device_rotation);
+
+  - platform: homeassistant
+    id: home_temperature
+    entity_id: sensor.home_temperature
+    on_value: 
+      then:
+        - script.execute: update_time
+
+text_sensor:
+  # Which microphone front-end is actually running. Reads back the component
+  # state, so it shows "aec" if the AFE failed to initialise and fell back.
+  - platform: homeassistant
+    id: ha_sun
+    entity_id: sun.sun
+    on_value:
+      then:
+        - script.execute: update_weather_icon
+
+  - platform: homeassistant
+    id: ha_weather_home
+    entity_id: weather.home
+    on_value:
+      then:
+        - logger.log:
+            format: "WEATHER state is: %s"
+            args: ['x.c_str()']
+        - script.execute: update_weather_icon
+
+  - platform: homeassistant
+    id: ha_moon_phase
+    entity_id: sensor.moon_phase
+    on_value:
+      then:
+        - logger.log:
+            format: "MOON_PHASE state is: %s"
+            args: ['x.c_str()']
+
+  # Which LVGL page is on screen. Deliberately only knows the BASE pages, so it
+  # keeps working when an app package is removed. Used to verify the wake-word
+  # navigation (request 4): start the voice assistant from an app page and this
+  # must go from "other" to "main".
+  - platform: template
+    name: "Active Page"
+    id: ${id}_active_page
+    icon: mdi:page-layout-header
+    entity_category: diagnostic
+    update_interval: 1s
+    lambda: |-
+      if (id(main_page)->is_showing()) return {std::string("main")};
+      if (id(apps_page)->is_showing()) return {std::string("apps")};
+      if (id(loading_page)->is_showing()) return {std::string("loading")};
+      return {std::string("other")};
+
+binary_sensor:
+
+  - platform: template
+    name: "Wake Word Enabled"
+    id: ${id}_wake_word_enabled_bs
+    entity_category: diagnostic
+    icon: mdi:microphone-off
+    lambda: 'return id(wake_word_enabled);'
+    publish_initial_state: true
+
+  - platform: template
+    name: "Wake Word Listening"
+    id: ${id}_wake_word_listening
+    entity_category: diagnostic
+    icon: mdi:ear-hearing
+    lambda: 'return id(mww).is_running();'
+    publish_initial_state: true
+
+  # True while a voice-assistant session is running (wake word through TTS).
+  # `wake_word_listening` stays true during a session (the stop model runs), so
+  # this is the reliable "the session is over" signal for tests/automations.
+  - platform: template
+    name: "Voice Active"
+    id: ${id}_voice_active
+    entity_category: diagnostic
+    icon: mdi:account-voice
+    lambda: 'return id(${id}_voice_assistant).is_running();'
+    publish_initial_state: true
+
+  - platform: axp2101
+    axp2101_id: axp2101_pmu
+    battery_charging:
+      name: "Battery Charging"
+      id: ${id}_battery_charging
+      on_press:
+        then:
+          - script.execute: animate_battery_icon
+      on_release:
+        then:
+          - script.execute: stop_animate_battery_icon
+          - lvgl.widget.update:
+              id: topbar_battery_icon
+              opa: 100%
+    vbus_connected:
+      name: "USB Connected"
+   #---------------- Physical Buttons ----------------#
+  - platform: gpio
+    pin:
+      number: GPIO0
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Button -"
+    id: btn_boot
+    on_press:
+      - logger.log: "*** BOOT/- PRESSED ***"
+      - script.execute: volume_down
+  
+  - platform: gpio
+    pin:
+      number: GPIO16
+      mode: INPUT_PULLUP
+      inverted: false
+    name: "Button Power"
+    id: btn_pwr
+    filters:
+      - delayed_on: 50ms
+    on_press:
+      - logger.log: "*** POWER PRESSED ***"
+      - script.execute: wake_display
+    # Mute/unmute ONLY on a short click. A long hold is the power-off gesture
+    # (AXP2101 POK cuts power at ~6 s) and must not flip the mute: wake_word_enabled
+    # is restored from flash, so a stray hold used to leave the device deaf for
+    # good with nothing but a red status line to show for it.
+    on_click:
+      min_length: 50ms
+      max_length: 900ms
+      then:
+        - if:
+            condition:
+              lambda: 'return id(timer_ringing);'
+            then:
+              - script.execute: stop_timer_ringing
+            else:
+              - if:
+                  condition:
+                    lambda: 'return id(wake_word_enabled);'
+                  then:
+                    - logger.log: "Disabling wake word, red status line"
+                    - script.execute: stop_wake_word
+                    # Stop any in-progress voice session so muting takes effect immediately
+                    - if:
+                        condition:
+                          voice_assistant.is_running:
+                        then:
+                          - voice_assistant.stop:
+                  else:
+                    - logger.log: "Enabling wake word, blue status line"
+                    - script.execute: start_wake_word
+  - platform: gpio
+    pin:
+      number: GPIO18
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Button +"
+    id: btn_key
+    on_press:
+      - logger.log: "*** +/KEY PRESSED ***"
+      - script.execute: volume_up
+
+
+#---------------- Voice Assistant ----------------#
+# Home Assistant API (required for voice_assistant).
+# The id is needed so sh_radio can check whether Home Assistant is connected
+# before asking it to transcode a station (see radio_play_via_ha).
+
+api:
+  id: ${id}_api
+
+
+# Voice Assistant
+voice_assistant:
+  id: ${id}_voice_assistant
+  microphone: ${id}_microphone
+  media_player: ${id}_media_player
+  micro_wake_word: mww
+  use_wake_word: false
+  noise_suppression_level: 3
+  auto_gain: 31dBFS
+
+
+  on_intent_progress:
+    - logger.log: 'VOICE_ASSISTANT: on_intent_progress'
+  on_intent_end:
+    - logger.log: 'VOICE_ASSISTANT: on_intent_end'
+  on_listening:
+    - logger.log: 'VOICE_ASSISTANT: on_listening'
+    - lambda: |-
+        id(va_active) = true;
+        // New interaction: re-latch the caption playback clock once this
+        // response's audio actually starts (see the 50 ms caption interval).
+        id(caption_epoch_valid) = false;
+        id(caption_active) = false;
+        id(caption_hide_at) = 0;
+    - script.execute: wake_display
+    # Text from the previous answer must not survive into the new interaction.
+    # It is blanked, not just hidden: a hidden label keeps its text, so the old
+    # words would flash on screen the moment the label is shown again.
+    - lvgl.widget.hide:
+        id: response_text
+    - lvgl.widget.hide:
+        id: request_text
+    - lvgl.label.update:
+        id: response_text
+        text: ""
+    - lvgl.label.update:
+        id: request_text
+        text: ""
+    # Request 4: a wake word from ANY page (radio, settings, sub-pages) brings
+    # the main screen up, so the listening UI and the request/response text are
+    # visible. topbar is hidden on main_page (it belongs to the apps/settings
+    # chrome).
+    - lvgl.page.show:
+        lvgl_id: ${id}_lvgl
+        id: main_page
+    - lvgl.widget.hide:
+        id: topbar
+    - micro_wake_word.enable_model: stop
+    - mixer_speaker.apply_ducking:
+        id: ${id}_media_speaker
+        decibel_reduction: 30
+    - lvgl.widget.update:
+        id: status_line
+        opa: 100%
+    - lvgl.widget.show:
+        id: status_line
+
+  on_start:
+    - logger.log: 'VOICE_ASSISTANT: on_start'
+
+  on_wake_word_detected:
+    - logger.log: 'VOICE_ASSISTANT: on_wake_word_detected'
+
+  on_end:
+    - logger.log: 'VOICE_ASSISTANT: on_end'
+    - wait_until:
+        condition:
+          - media_player.is_announcing:
+              id: ${id}_media_player
+        timeout: 0.5s
+    - logger.log: 'VOICE_ASSISTANT: on_end - Passed wait for media_player.is_announcing with timeout'
+
+    - wait_until:
+        condition:
+          - and:
+              - not:
+                  media_player.is_announcing:
+                    id: ${id}_media_player
+              - not:
+                  speaker.is_playing:
+                    id: ${id}_announcement_resampler_speaker
+        # Request 5: without a timeout this wait could hang forever (e.g. the
+        # announcement speaker never reports is_playing false), which left the
+        # mixer ducked at -30 dB and the radio never resumed. Timing out lets
+        # the unduck + radio resume below always run.
+        timeout: 8s
+    - logger.log: 'VOICE_ASSISTANT: on_end - Passed wait for media_player.is_announcing and speaker.is_playing'
+
+    # Restore the mixer immediately (duration 0): the radio is the long-lived
+    # source and must not stay ducked if the announcement-drain wait had to time
+    # out. The radio app's voice-busy sensor re-requests the station through HA
+    # once the announcement is really gone (see radio_voice_busy).
+    - mixer_speaker.apply_ducking:
+        id: ${id}_media_speaker
+        decibel_reduction: 0
+        duration: 0s
+    - if:
+        condition:
+          lambda: 'return id(wake_word_enabled);'
+        then:
+          - script.execute: start_wake_word
+    - script.execute: stop_animate_status_line
+    - lambda: |-
+        id(va_active) = false;
+        id(request_full_text) = "";
+        // Neither text is cleared here. This handler is bounded by an 8 s timeout
+        // so the mixer always gets un-ducked, and it also runs when the LLM has
+        // finished but the device still has seconds of streamed TTS left to play
+        // — clearing here wiped both texts mid-answer. The caption interval owns
+        // the labels and hides them once the audio queued in the speaker ring has
+        // actually been played. If nothing is in flight (no TTS, or an error)
+        // schedule the clear straight away.
+        if (id(caption_hide_at) == 0 && !id(caption_epoch_valid)) {
+          id(caption_hide_at) = millis() + id(${id}_speaker)->get_buffered_ms() + 250;
+        }
+        id(caption_last_start) = -1;
+        id(caption_last_end) = -1;
+        id(caption_span_text) = "";
+        id(caption_changed) = false;
+
+  on_stt_end:
+    - logger.log: 'VOICE_ASSISTANT: on_stt_end'
+    - lambda: 'id(request_full_text) = x;'
+    - if:
+        condition:
+          lambda: 'return id(show_request_text);'
+        then:
+          # Show the whole utterance instead of paging through it 30 characters
+          # at a time. The request text now stays on screen for the whole answer,
+          # and the old pager looped back to the start when it ran out.
+          - lvgl.widget.show:
+              id: request_text
+          - lvgl.label.update:
+              id: request_text
+              text: !lambda 'return id(request_full_text);'
+    - script.execute: stop_animate_status_line
+    - script.execute: animate_status_line
+
+  on_stt_vad_start:
+    - logger.log: 'VOICE_ASSISTANT: on_stt_vad_start'
+  
+  on_stt_vad_end:
+    - logger.log: 'VOICE_ASSISTANT: on_stt_vad_end'
+
+  on_tts_start:
+    - logger.log: 'VOICE_ASSISTANT: on_tts_start'
+    - lambda: 'id(tts_start_ms) = millis();'
+    - lambda: |-
+        // The whole TTS text arrives here in one piece. It is NOT paged out on a
+        // timer: the caption interval renders whichever sentence the speaker's
+        // playback clock says is being spoken. The epoch is deliberately left
+        // alone — if the announcement already started before this event, the
+        // clock is already running, so the first caption shown is the sentence
+        // actually being spoken rather than the start of the response.
+        id(response_full_text) = x;
+        id(caption_active) = true;
+        id(caption_hide_at) = 0;
+        id(caption_last_start) = -1;
+        id(caption_last_end) = -1;
+        id(caption_span_text) = "";
+        id(caption_changed) = false;
+    - if:
+        condition:
+          lambda: 'return id(show_response_text);'
+        then:
+          # Blank the label BEFORE showing it. A hidden label keeps its previous
+          # text, so without this the last answer flashes on screen until the
+          # caption interval renders the first piece of this one.
+          - lvgl.label.update:
+              id: response_text
+              text: ""
+          - lvgl.widget.show:
+              id: response_text
+
+  on_tts_end:
+    - logger.log: 'VOICE_ASSISTANT: on_tts_end'
+    - script.execute: stop_animate_status_line
+
+        
+  on_idle:
+    - logger.log: 'VOICE_ASSISTANT: on_idle'
+ 
+  on_error:
+    - logger.log: 'VOICE_ASSISTANT: on_error'
+  
+  on_client_connected:
+    - logger.log: 'VOICE_ASSISTANT: on_client_connected'
+    - lambda: 'id(client_connected) = true;'
+    - lvgl.page.show:
+        lvgl_id: ${id}_lvgl
+        id: main_page
+    - if:
+        condition:
+          lambda: 'return id(wake_word_enabled);'
+        then:
+          - script.execute: start_wake_word
+
+  on_client_disconnected:
+    - logger.log: 'VOICE_ASSISTANT: on_client_disconnected'
+    - lambda: 'id(client_connected) = false;'
+    # Stop listening, but do NOT touch wake_word_enabled: a mute must survive
+    # reconnects, and a plain disconnect must not silently mute the device.
+    - micro_wake_word.stop:
+    - voice_assistant.stop:
+
+  on_timer_started:
+    - logger.log: 'VOICE_ASSISTANT: on_timer_started'
+    - lambda: 'id(timer_active) = true;'
+    - script.execute: update_timer_display
+    - lvgl.widget.show:
+        id: timer_card
+
+  on_timer_finished:
+    - logger.log: 'VOICE_ASSISTANT: on_timer_finished'
+    - lambda: |-
+        id(timer_ringing) = true;
+        id(timer_active) = true;
+        id(timer_seconds_left) = 0;
+        lv_label_set_text(id(timer_label), "0:00");
+    - mixer_speaker.apply_ducking:
+        id: ${id}_media_speaker
+        decibel_reduction: 20
+        duration: 0.0s
+    - micro_wake_word.enable_model: stop
+    - lvgl.widget.show:
+        id: timer_card
+    - script.execute: ring_timer
+
+  on_timer_cancelled:
+    - logger.log: 'VOICE_ASSISTANT: on_timer_cancelled'
+    - script.execute: update_timer_display
+    - if:
+        condition:
+          lambda: 'return !id(timer_active);'
+        then:
+          - lvgl.widget.hide:
+              id: timer_card
+
+  on_timer_updated:
+    - logger.log: 'VOICE_ASSISTANT: on_timer_updated'
+    - script.execute: update_timer_display
+
+  on_timer_tick:
+    - script.execute: update_timer_display
+
+
+micro_wake_word:
+  id: mww
+  microphone: ${id}_microphone
+  stop_after_detection: false
+  models:
+    - model: 'https://github.com/kahrendt/microWakeWord/releases/download/okay_nabu_20241226.3/okay_nabu.json'
+      id: okay_nabu
+    - model: hey_jarvis
+      id: hey_jarvis
+    - model: hey_mycroft
+      id: hey_mycroft
+    - model: 'https://github.com/kahrendt/microWakeWord/releases/download/stop/stop.json'
+      id: stop
+      internal: true
+      probability_cutoff: 0.40
+      sliding_window_size: 2
+  vad:
+    model: 'https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/vad.json'
+  on_wake_word_detected:
+    # Only react when listening is enabled (power-button mute guard)
+    - if:
+        condition:
+          lambda: 'return id(wake_word_enabled);'
+        then:
+          # If voice assistant is active (STT/thinking), stop it
+          - if:
+              condition:
+                voice_assistant.is_running:
+              then:
+                - voice_assistant.stop:
+              else:
+                # If timer is ringing, stop it
+                - if:
+                    condition:
+                       lambda: 'return id(timer_ringing);'
+                    then:
+                      - script.execute: stop_timer_ringing
+                    else:
+                      # If TTS is announcing, stop it (catches "Stop" wake word during TTS)
+                      - if:
+                          condition:
+                            media_player.is_announcing:
+                              id: ${id}_media_player
+                          then:
+                            - media_player.stop:
+                                id: ${id}_media_player
+                          else:
+                            # Normal wake word → start voice assistant
+                            - voice_assistant.start:
+                                wake_word: !lambda return wake_word;
+                            - script.execute: wake_display
+
+script:
+  # ── Internet radio UI ─────────────────────────────────────────────────────
+  # Repaint the radio pages from sh_radio state. Fired on page load and on every
+  # data change (sh_radio on_updated) — deliberately NOT on media-player state:
+  # that path (radio_status_update) only touches three hero labels, because the
+  # player also fires on_state for every volume step and a full repaint there
+  # starved the main loop and froze the UI.
+  #
+  # Cheapness rules used here (the "tapping several stations locks up" bug):
+  #   * never rebuild the whole page, only labels that actually changed
+  #   * only repaint rows that are visible on the current page
+  #   * the active-tab restyle runs only when the tab really changed
+  - id: aec_test_tone
+    then:
+      - logger.log: "AEC test tone: 4 s of 1 kHz"
+      - repeat:
+          count: 40
+          then:
+            - lambda: |-
+                static int16_t chunk[1600 * 2];  // 100 ms, stereo @16 kHz
+                for (int i = 0; i < 1600; i++) {
+                  int16_t v = ((i / 8) % 2) ? 12000 : -12000;
+                  chunk[2 * i] = v;
+                  chunk[2 * i + 1] = v;
+                }
+                id(${id}_speaker).play((const uint8_t *) chunk, sizeof(chunk), pdMS_TO_TICKS(200));
+            - delay: 90ms
+
+  - id: start_wake_word
+    then:
+      - logger.log: "Starting wake word detection"
+      - micro_wake_word.disable_model: stop
+      - micro_wake_word.start:
+      - lambda: 'id(wake_word_enabled) = true;'
+      # Keep UI in sync with the flag: enabled → theme accent bar, hidden when
+      # idle. A lambda (not lvgl.widget.update) because the colour validator
+      # does not take a lambda, and the bar must follow the user's accent
+      # colour (the static value here would otherwise win over the
+      # `accent_line` style attached in main.yaml).
+      - lambda: |-
+          if (id(status_line) != nullptr)
+            lv_obj_set_style_line_color(id(status_line)->obj, lv_color_hex(id(accent_color)), LV_PART_MAIN);
+      - lvgl.widget.hide:
+          id: status_line
+
+  - id: stop_wake_word
+    then:
+      - logger.log: "Stopping wake word detection"
+      - micro_wake_word.stop:
+      - lambda: 'id(wake_word_enabled) = false;'
+      # Keep UI in sync with the flag: disabled → red bar
+      - lvgl.widget.update:
+          id: status_line
+          line_color: 0xFF0000
+          opa: 100%
+          hidden: false
+      - lvgl.widget.show:
+          id: status_line
+
+  - id: animate_status_line
+    then:
+      - logger.log: "inside animation"
+
+      - globals.set:
+          id: status_line_pulsing
+          value: 'true'
+      - lvgl.widget.show:
+          id: status_line
+      - while:
+          condition:
+            lambda: 'return id(status_line_pulsing);'
+          then:
+            # Fade in: 0% -> 100% in 10 steps of 30ms each
+            - lvgl.widget.update:
+                id: status_line
+                opa: 10%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 20%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 30%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 40%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 50%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 60%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 70%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 80%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 90%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 100%
+            - delay: 120ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 90%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 80%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 70%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 60%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 50%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 40%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 30%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 20%
+            - delay: 50ms
+            - lvgl.widget.update:
+                id: status_line
+                opa: 10%
+            - delay: 120ms
+
+  - id: stop_animate_status_line
+    then:
+      - globals.set:
+          id: status_line_pulsing
+          value: 'false'
+      - if:
+          condition:
+            lambda: 'return id(wake_word_enabled);'
+          then:
+            - lvgl.widget.hide:
+                id: status_line
+
+  - id: animate_battery_icon
+    then:
+      - globals.set:
+          id: battery_icon_animating
+          value: 'true'
+      - while:
+          condition:
+            lambda: 'return id(battery_icon_animating);'
+          then:
+            - lvgl.widget.update:
+                id: topbar_battery_icon
+                opa: 30%
+            - delay: 400ms
+            - lvgl.widget.update:
+                id: topbar_battery_icon
+                opa: 100%
+            - delay: 400ms
+
+  - id: stop_animate_battery_icon
+    then:
+      - globals.set:
+          id: battery_icon_animating
+          value: 'false'
+
+  - id: volume_down
+    then:
+      - media_player.volume_down:
+          id: ${id}_media_player
+      - script.execute: show_volume_popup
+
+  - id: volume_up
+    then:
+      - media_player.volume_up:
+          id: ${id}_media_player
+      - script.execute: show_volume_popup
+
+  - id: show_volume_popup
+    then:
+      - if:
+          condition:
+            - or:
+                - not:
+                    lambda: 'return id(sound_page).is_showing();'
+                - light.is_off: ${id}_display_backlight
+                - lvgl.is_paused
+          then:
+            - lambda: 'id(volume_popup_dismiss_at) = millis() + 3000;'
+            - script.execute: wake_display
+            - lvgl.widget.show:
+                id: volume_popup_backdrop
+            - lvgl.widget.show:
+                id: volume_popup_card
+
+  - id: enable_repeat_one
+    then:
+      - media_player.repeat_one:
+          id: ${id}_media_player
+          announcement: true
+      - lambda: 'id(${id}_media_player).set_playlist_delay_ms(esphome::speaker::AudioPipelineType::ANNOUNCEMENT, 500);'
+
+  - id: disable_repeat
+    then:
+      - media_player.repeat_off:
+          id: ${id}_media_player
+          announcement: true
+      - lambda: 'id(${id}_media_player).set_playlist_delay_ms(esphome::speaker::AudioPipelineType::ANNOUNCEMENT, 0);'
+
+  - id: ring_timer
+    mode: restart
+    then:
+      - script.execute: enable_repeat_one
+      - lambda: 'id(${id}_media_player).play_file(id(timer_finished_sound), true, false);'
+      - delay: 15min
+      - script.execute: stop_timer_ringing
+
+  - id: stop_timer_ringing
+    then:
+      - logger.log: "Stopping timer ringing"
+      - lambda: |-
+          id(timer_ringing) = false;
+          id(timer_active) = false;
+      - script.execute: disable_repeat
+      - if:
+          condition:
+            media_player.is_announcing:
+              id: ${id}_media_player
+          then:
+            - media_player.stop:
+                announcement: true
+                id: ${id}_media_player
+      - mixer_speaker.apply_ducking:
+          id: ${id}_media_speaker
+          decibel_reduction: 0
+          duration: 0.5s
+      - micro_wake_word.disable_model: stop
+      - script.execute: update_timer_display
+      - if:
+          condition:
+            lambda: 'return !id(timer_active);'
+          then:
+            - lvgl.widget.hide:
+                id: timer_card
+
+  - id: update_timer_display
+    then:
+      - lambda: |-
+          auto &timers = id(${id}_voice_assistant).get_timers();
+          int best_seconds = -1;
+          for (const auto &t : timers) {
+            if (t.is_active && (best_seconds < 0 || (int)t.seconds_left < best_seconds)) {
+              best_seconds = (int)t.seconds_left;
+              id(timer_total_seconds) = t.total_seconds;
+              id(timer_seconds_left) = t.seconds_left;
+            }
+          }
+          if (best_seconds >= 0) {
+            id(timer_active) = true;
+            int hrs = best_seconds / 3600;
+            int mins = (best_seconds % 3600) / 60;
+            int secs = best_seconds % 60;
+            char buf[16];
+            if (hrs > 0)
+              snprintf(buf, sizeof(buf), "%d:%02d:%02d", hrs, mins, secs);
+            else
+              snprintf(buf, sizeof(buf), "%d:%02d", mins, secs);
+            lv_label_set_text(id(timer_label), buf);
+          } else if (!id(timer_active)) {
+            id(timer_seconds_left) = 0;
+          }
+
+  - id: wake_display
+    then:
+      - lambda: 'lv_display_trigger_activity(id(${id}_lvgl).get_disp());'
+      - if:
+          condition: lvgl.is_paused
+          then:
+            - lvgl.resume:
+            - lvgl.widget.redraw:
+      - light.turn_on:
+          id: ${id}_display_backlight
+          brightness: 80%
+          transition_length: 1s
+
+  - id: update_time
+    then:
+      - if:
+          condition:
+            - lambda: 'return id(${id}_time).now().is_valid();'
+          then:
+            - lvgl.label.update:
+                id: topbar_time_label
+                text: !lambda 'return id(${id}_time).now().strftime("%H:%M");'
+            - lvgl.label.update:
+                id: clk_time
+                text: !lambda 'return id(${id}_time).now().strftime("%H:%M");'
+            - lvgl.label.update:
+                id: clk_date
+                text: !lambda |-
+                  auto now = id(${id}_time).now();
+                  float temp = id(home_temperature).state;
+
+                  if (std::isnan(temp)) {
+                    return now.strftime("%a, %d %b");
+                  }
+                  
+                  char buf[50];
+                  snprintf(buf, sizeof(buf), "%.1f °C | %s", 
+                    temp, 
+                    now.strftime("%a, %d %b").c_str());
+                  return std::string(buf);
+
+  # Renders the sentence of the response that the DAC playback clock says is
+  # being spoken. Executed by the 50 ms "Voice caption" interval below.
+  - id: update_caption
+    then:
+      - lambda: |-
+          const std::string &text = id(response_full_text);
+          const int n = (int) text.size();
+          const uint64_t frames = id(${id}_speaker)->get_played_frames();
+          const uint32_t sample_rate = id(${id}_speaker)->get_output_sample_rate();
+
+          if (n == 0 || sample_rate == 0 || frames < id(caption_epoch_frames)) {
+            id(caption_changed) = false;
+            return;
+          }
+
+          // Milliseconds of audio actually played since this response started,
+          // trimmed by the constant pipeline / start-up latency.
+          int64_t played_ms =
+              (int64_t) ((frames - id(caption_epoch_frames)) * 1000ULL / sample_rate);
+          played_ms -= id(caption_lead_ms);
+          if (played_ms < 0) played_ms = 0;
+
+          // Where in the text that lands. Sentence lengths vary a lot, so time
+          // is apportioned by character count across the whole response.
+          const int64_t target =
+              played_ms * (int64_t) id(caption_rate_mcps) / 1000000;
+
+          // A '.' only ends a sentence when whitespace/end follows it, so
+          // decimals such as "3.5" are not split in two. A comma/semicolon/colon
+          // is also a break point, but only once the current piece has grown
+          // past SOFT_BREAK: a single sentence in a long answer can otherwise be
+          // far more lines than the caption has room for. HARD_BREAK is the
+          // backstop for a piece with no punctuation at all.
+          constexpr int SOFT_BREAK = 70;
+          constexpr int HARD_BREAK = 140;
+          auto is_terminator = [&text, n](int j, int piece_start) -> bool {
+            const char c = text[j];
+            if ((j - piece_start) >= HARD_BREAK && c == ' ') return true;
+            if (c == '!' || c == '?' || c == '\n') return true;
+            if (c == ',' || c == ';' || c == ':') return (j - piece_start) >= SOFT_BREAK;
+            if (c != '.') return false;
+            if (j + 1 >= n) return true;
+            const char d = text[j + 1];
+            return d == ' ' || d == '\n' || d == '\t' || d == '"' || d == '\'' ||
+                   d == ')' || d == ']';
+          };
+
+          // Walk the pieces until the one covering `target` is found; once the
+          // text runs out the last piece stays on screen.
+          int start = 0, end = n, i = 0;
+          while (i < n) {
+            int j = i;
+            while (j < n && !is_terminator(j, i)) j++;
+            if (j < n) j++;
+            if (target < j || j >= n) { start = i; end = j; break; }
+            i = j;
+            while (i < n && text[i] == ' ') i++;
+          }
+          while (start < end && (text[start] == ' ' || text[start] == '\n')) start++;
+          while (end > start && (text[end - 1] == ' ' || text[end - 1] == '\n')) end--;
+
+          // Only touch the label when the sentence actually changes, so a
+          // 50 ms tick does not redraw the panel 20 times a second.
+          if (start != id(caption_last_start) || end != id(caption_last_end)) {
+            id(caption_last_start) = start;
+            id(caption_last_end) = end;
+            id(caption_span_text) = text.substr(start, end - start);
+            id(caption_changed) = true;
+          } else {
+            id(caption_changed) = false;
+          }
+      - if:
+          condition:
+            lambda: 'return id(caption_changed);'
+          then:
+            - lvgl.label.update:
+                id: response_text
+                text: !lambda 'return id(caption_span_text);'
+
+  - id: update_weather_icon
+    then:
+      - lvgl.label.update:
+          id: weather_icon
+          text: !lambda |-
+            std::string weather = id(ha_weather_home).state;
+            std::string sun_state = id(ha_sun).state;
+            if (weather == "sunny") {
+              if (sun_state == "below_horizon")
+                return "\U000F0594";
+              else
+                return "\U000F0599";
+            }
+            else if (weather == "partlycloudy") {
+              if (sun_state == "below_horizon")
+                return "\U000F0F31";
+              else
+                return "\U000F0595";
+            }
+            else if (weather == "clear-night") return "\U000F0594";
+            else if (weather == "cloudy") return "\U000F0590";
+            else if (weather == "exceptional") return "\U000F0F2F";
+            else if (weather == "fog") return "\U000F0591";
+            else if (weather == "hail") return "\U000F0592";
+            else if (weather == "lightning") return "\U000F0593";
+            else if (weather == "lightning-rainy") return "\U000F067E";
+            else if (weather == "partlycloudy-night") return "\U000F0F31";
+            else if (weather == "pouring") return "\U000F0596";
+            else if (weather == "rainy") return "\U000F0597";
+            else if (weather == "snowy") return "\U000F0598";
+            else if (weather == "snowy-rainy") return "\U000F067F";
+            else if (weather == "windy") return "\U000F059D";
+            else if (weather == "windy-variant") return "\U000F059E";
+            else return "\U000F0599";
+
+external_components:
+  # Every component this device needs ships in this repository:
+  #   components/axp2101               PMU: charger defaults, charging switch, 10% floor
+  #   components/waveshare_duplex_audio ES7210/ES8311 duplex I2S + ESP-SR AFE + barge-in
+  #   components/lvgl_screenshot        framebuffer screenshot over HTTP (:8080)
+  #   components/stream_microphone      raw mic streaming to a TCP host
+  #   components/sh_radio               internet-radio directory + favourites
+  #   components/resampler              patched stock resampler (stream rate changes)
+  - source:
+      type: git
+      url: https://github.com/notf0und/irabelle-esphome-devices
+      ref: main
+      path: components
+    components:
+      - axp2101
+      - waveshare_duplex_audio
+      - lvgl_screenshot
+      - stream_microphone
+      - sh_radio
+      - resampler
+    refresh: 1d
+
+logger:
+  # Everything below INFO is hidden - the yaml is full of logger.log debug
+  # actions and components are chatty at DEBUG. Raise this at runtime with the
+  # "Log Level" select when debugging (or set it to DEBUG temporarily).
+  level: INFO
+  # must be at least as severe as `level`; the shared packages/common/logger.yaml
+  # defaults it to DEBUG, so pin both here (device yaml wins over packages).
+  initial_level: INFO
+  logs:
+    axp2101.sensor: INFO
+    display.mipi_spi: ERROR
+    sensor: WARN
+    qmi8658: ERROR
+    waveshare_duplex.mic: INFO
+
+# Screenshot of the LVGL framebuffer: http://<device-ip>:8080/screenshot
+lvgl_screenshot:
+  port: 8080
+  lvgl_id: ${id}_lvgl
+
+# The station favicon (online_image) was removed: most radio-browser favicons are
+# ICO/WebP/SVG/JPEG (which the PNG-only decoder cannot read), each attempt cost
+# a synchronous main-loop download that made the UI sluggish, and the hero disc
+# only ever needs the MDI radio glyph. The 32 kB download buffer + 56 kB RGB565
+# decode buffer are gone with it (see the PSRAM numbers in the report).
+
+# Heap/main-loop telemetry for the radio lock-up investigation.
+debug:
+  update_interval: 15s
+
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          float accel_x = id(${id}_acceleration_x).state;
+          float accel_y = id(${id}_acceleration_y).state;
+          
+          float abs_x = fabs(accel_x);
+          float abs_y = fabs(accel_y);
+          
+          // acceleration is in g now (built-in motion component), gravity ≈ 1.0
+          const float THRESHOLD = 0.5;
+          
+          if (abs_x > THRESHOLD && abs_x > abs_y) {
+            id(device_rotation) = (accel_x > 0) ? 0 : 180;
+          } else if (abs_y > THRESHOLD && abs_y > abs_x) {
+            id(device_rotation) = (accel_y > 0) ? 270 : 90;
+          }
+      - if:
+          condition:
+            - lambda: 'return id(device_rotation) != id(last_lvgl_rotation);'
+          then:
+            - script.execute: wake_display
+            - lambda: 'id(last_lvgl_rotation) = id(device_rotation);'
+            - if:
+                condition:
+                  - lambda: 'return id(device_rotation) == 0;'
+                then:
+                  - lvgl.display.set_rotation:
+                      id: ${id}_lvgl
+                      rotation: 0
+            - if:
+                condition:
+                  - lambda: 'return id(device_rotation) == 180;'
+                then:
+                  - lvgl.display.set_rotation:
+                      id: ${id}_lvgl
+                      rotation: 180
+            - if:
+                condition:
+                  - lambda: 'return id(device_rotation) == 90;'
+                then:
+                  - lvgl.display.set_rotation:
+                      id: ${id}_lvgl
+                      rotation: 90
+            - if:
+                condition:
+                  - lambda: 'return id(device_rotation) == 270;'
+                then:
+                  - lvgl.display.set_rotation:
+                      id: ${id}_lvgl
+                      rotation: 270
+      - if:
+          condition:
+            lambda: 'return id(volume_popup_dismiss_at) > 0 && millis() > id(volume_popup_dismiss_at);'
+          then:
+            - lambda: 'id(volume_popup_dismiss_at) = 0;'
+            - lvgl.widget.hide:
+                id: volume_popup_backdrop
+            - lvgl.widget.hide:
+                id: volume_popup_card
+      - lambda: |-
+          int pct = (int)(round(id(${id}_display_backlight).current_values.get_brightness() * 100));
+          if (pct != id(last_brightness_pct)) {
+            id(last_brightness_pct) = pct;
+            lv_slider_set_value(id(display_page_brightness_slider), pct, LV_ANIM_OFF);
+          }
+      - if:
+          condition:
+            lambda: 'return id(timer_active);'
+          then:
+            - logger.log: "Timer active, updating display"
+            - script.execute: update_timer_display
+
+  # ── Voice caption: lock the on-screen text to the DAC playback clock ───────
+  # Runs fast only while a response is being captioned; otherwise it falls
+  # through three cheap checks. See the caption globals for the rationale.
+  - interval: 50ms
+    then:
+      # Latch the playback origin the first time audio is really in flight.
+      # media_player.is_announcing goes true as soon as the announcement URL is
+      # queued — before any audio is fetched, decoded or buffered — so it is
+      # only the gate; the clock itself starts at the speaker's frame counter.
+      - if:
+          condition:
+            lambda: |-
+              return !id(caption_epoch_valid)
+                  && (id(va_active) || id(caption_active));
+          then:
+            - if:
+                condition:
+                  - media_player.is_announcing:
+                      id: ${id}_media_player
+                then:
+                  - lambda: |-
+                      id(caption_epoch_frames) = id(${id}_speaker)->get_played_frames();
+                      id(caption_epoch_valid) = true;
+                      ESP_LOGI("caption", "clock latched at frame %llu",
+                               (unsigned long long) id(caption_epoch_frames));
+      # Render the sentence the playback clock is currently on.
+      - if:
+          condition:
+            lambda: |-
+              return id(caption_active) && id(caption_epoch_valid)
+                  && id(show_response_text) && !id(response_full_text).empty();
+          then:
+            - script.execute: update_caption
+      # Announcement over: stop the clock, fold this response's measured speaking
+      # rate into the running average, and schedule the caption to be cleared
+      # only once the audio still queued in the speaker ring has been played.
+      - if:
+          condition:
+            lambda: 'return id(caption_epoch_valid);'
+          then:
+            - if:
+                condition:
+                  - not:
+                      media_player.is_announcing:
+                        id: ${id}_media_player
+                then:
+                  - lambda: |-
+                      const std::string &text = id(response_full_text);
+                      const uint64_t frames = id(${id}_speaker)->get_played_frames();
+                      const uint32_t sample_rate = id(${id}_speaker)->get_output_sample_rate();
+                      // The announcement pipeline is drained, but its audio is
+                      // not necessarily audible yet: hold the caption for what is
+                      // still queued ahead of the DAC.
+                      if (id(caption_hide_at) == 0) {
+                        const uint32_t queued_ms = id(${id}_speaker)->get_buffered_ms();
+                        id(caption_hide_at) = millis() + queued_ms + 250;
+                        ESP_LOGI("caption", "announcement drained, %u ms still queued",
+                                 (unsigned) queued_ms);
+                      }
+                      if (sample_rate > 0 && frames > id(caption_epoch_frames) &&
+                          !text.empty()) {
+                        const int64_t total_ms = (int64_t) ((frames - id(caption_epoch_frames)) *
+                                                            1000ULL / sample_rate);
+                        // The clock was latched when the announcement was queued,
+                        // so total_ms still contains the start-up delay that
+                        // caption_lead_ms trims. Take that out before measuring
+                        // the speaking rate, otherwise the rate comes out slow.
+                        const int64_t speech_ms = total_ms - (int64_t) id(caption_lead_ms);
+                        // Skip responses the ESPHome API truncated at 500 chars:
+                        // the text we hold is shorter than what was spoken, which
+                        // would bias the measured rate downwards.
+                        if (speech_ms > 800 && text.size() < 490) {
+                          const int measured =
+                              (int) ((int64_t) text.size() * 1000000 / speech_ms);
+                          if (measured >= 6000 && measured <= 30000) {
+                            const int blended =
+                                (id(caption_rate_mcps) * 7 + measured * 3) / 10;
+                            ESP_LOGI("caption",
+                                     "rate %d -> %d mcps (%u chars in %lld ms)",
+                                     measured, blended, (unsigned) text.size(),
+                                     (long long) speech_ms);
+                            id(caption_rate_mcps) = blended;
+                          }
+                        }
+                      }
+                      id(caption_epoch_valid) = false;
+                      id(caption_active) = false;
+
+      # Clear both texts once the queued audio has drained. Kept separate from
+      # on_end: that path is bounded by an 8 s timeout so the mixer always gets
+      # un-ducked, which used to fire mid-answer and wipe them.
+      - if:
+          condition:
+            lambda: |-
+              return id(caption_hide_at) != 0 &&
+                     (int32_t) (millis() - id(caption_hide_at)) >= 0;
+          then:
+            - lambda: 'id(caption_hide_at) = 0;'
+            - lvgl.widget.hide:
+                id: response_text
+            - lvgl.widget.hide:
+                id: request_text
+
+  - interval: 2s
+    then:
+      # Enforce wake_word_enabled against the real micro_wake_word state
+      # (backstop for any start/stop race, e.g. button bounce or pending start)
+      - if:
+          condition:
+            - and:
+                - lambda: 'return !id(wake_word_enabled);'
+                - micro_wake_word.is_running:
+          then:
+            - micro_wake_word.stop:
+      - if:
+          condition:
+            - and:
+                - lambda: 'return id(wake_word_enabled);'
+                - lambda: 'return id(client_connected);'
+                - not:
+                    micro_wake_word.is_running:
+          then:
+            - micro_wake_word.start:
+
+
+button:
+  - platform: template
+    name: "Power Off"
+    id: ${id}_power_off
+    icon: mdi:power
+    entity_category: config
+    on_press:
+      - lambda: 'id(axp2101_pmu).power_off();'
+
+  # Single-sample level calibration: run with the device resting on a level
+  # surface. Saved to NVS, so it survives reboots.
+  - platform: template
+    name: "Calibrate IMU"
+    id: ${id}_imu_calibrate
+    icon: mdi:axis-arrow
+    entity_category: config
+    on_press:
+      - motion.calibrate_level:
+          id: ${id}_imu
+          save: true
+
+  # ── TEMPORARY: Phase-1 internet-radio test controls ────────────────────────
+  # Delete once the on-screen radio app exists. Each button starts a real MP3
+  # stream that the device fetches and decodes by itself, on the one and only
+  # media player (volume/stop are the normal media_player controls in HA).
+  # Forces a full-screen LVGL repaint. Needed for the SCREENSHOT endpoint only:
+  # ESPHome registers the LVGL draw buffer in PARTIAL render mode, where a
+  # partial refresh renders the invalidated area into the buffer's ORIGIN and
+  # only the flush callback puts it at the right place on the panel. The
+  # screenshot component reads the raw buffer as a full frame, so it is only
+  # accurate right after a full-screen refresh. The panel itself is always
+  # correct, because flush_cb_() calls display->draw_pixels_at(area->x1, ...).
+  - platform: template
+    name: "Radio Test Redraw"
+    id: ${id}_radio_redraw_btn
+    icon: mdi:refresh
+    entity_category: diagnostic
+    on_press:
+      - lvgl.widget.redraw:
+
+  # Shows the Apps page from the API (the touch gesture is hard to automate).
+  # The tiles themselves come from the app packages.
+  - platform: template
+    name: "Test Show Apps"
+    id: ${id}_test_show_apps_btn
+    icon: mdi:apps
+    entity_category: diagnostic
+    on_press:
+      - script.execute: wake_display
+      - lvgl.page.show:
+          lvgl_id: ${id}_lvgl
+          id: apps_page
+      - lvgl.widget.show:
+          id: topbar
+
+number:
+  # Analog input level (ES7210 PGA, before the ADC). Raise this FIRST when the
+  # mic seems quiet; then bring AEC Gain back down to ~1-4. Doing it the other
+  # way round (huge post-gain) amplifies noise/echo and wrecks the wake word.
+  - platform: template
+    name: "Mic Analog Gain"
+    id: ${id}_mic_analog_gain
+    entity_category: config
+    icon: mdi:amplifier
+    unit_of_measurement: dB
+    min_value: 0.0
+    max_value: 37.5
+    step: 1.5
+    update_interval: 30s
+    set_action:
+      then:
+        - globals.set:
+            id: mic_analog_gain_db
+            value: !lambda 'return x;'
+        - lambda: |-
+            bool ok = id(${id}_audio_adc)->set_mic_gain(x);
+            ESP_LOGI("micgain", "set_mic_gain(%.1f dB) -> %s", x, ok ? "ok" : "FAILED");
+    lambda: 'return id(mic_analog_gain_db);'
+
+  # Live tuning for the voice caption sync. The playback clock is latched when
+  # the announcement is *queued*, but the first audio only reaches the DAC after
+  # the TTS is fetched and decoded (~0.3-0.7 s), so this trims that start-up
+  # delay. Raise it if the caption runs AHEAD of the voice, lower it if the
+  # caption lags BEHIND. Changing it takes effect on the next answer.
+  - platform: template
+    name: "Caption Lead"
+    id: ${id}_caption_lead
+    entity_category: config
+    icon: mdi:sync
+    unit_of_measurement: ms
+    min_value: -500
+    max_value: 1500
+    step: 10
+    update_interval: 5s
+    set_action:
+      then:
+        - lambda: |-
+            id(caption_lead_ms) = (int) x;
+            ESP_LOGI("caption", "lead set to %d ms", (int) x);
+    lambda: 'return id(caption_lead_ms);'
+
+  # RMS threshold (after "AEC Gain", both knobs live in
+  # waveshare-advanced-audio.yaml) that counts as someone speaking over the
+  # answer. Silence/residual sits below ~30, normal speech lands in the hundreds,
+  # so raise it if background noise stops the answer by itself.
+select:
+
+  - platform: template
+    name: "Audio Frontend"
+    id: ${id}_audio_frontend
+    entity_category: config
+    icon: mdi:waveform
+    optimistic: true
+    options:
+      - "aec"
+      - "afe"
+    initial_option: "afe"
+    set_action:
+      then:
+        - lambda: |-
+            if (x == "afe") id(${id}_microphone)->set_audio_frontend(1);
+            else id(${id}_microphone)->set_audio_frontend(0);
+
+  # AEC reference source:
+  #   hardware = ES7210 MIC3, fed from the speaker amp through the on-board
+  #              "AEC" divider (default; what the vendor firmware uses). Full
+  #              bandwidth and inherently delay-aligned — no offset/gain tuning.
+  #   software = copy of the playback stream pushed by the speaker task; needs
+  #              the AEC Ref Offset/Gain numbers and the pre-buffer lead.

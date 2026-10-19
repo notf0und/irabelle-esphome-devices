@@ -1,0 +1,737 @@
+      id: canvas_radio_list
+      bg_color: 0x000000
+      pad_all: 0
+      scrollable: false
+      scrollbar_mode: "OFF"
+      widgets:
+        # ── header: back to now-playing, section title, status, refresh ─────
+        - obj:
+            id: radio_list_back
+            x: 8
+            y: 34
+            width: 48
+            height: 48
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 24
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            pressed:
+              bg_color: 0x2A3352
+            on_click:
+              - lvgl.page.show:
+                  lvgl_id: ${id}_lvgl
+                  id: radio_page
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\U000F0141"
+                  text_font: mdi_32
+                  text_align: CENTER
+                  text_color: 0xFFFFFF
+
+        - label:
+            id: rl_title
+            x: 64
+            y: 34
+            width: 340
+            height: 30
+            text: "Per country"
+            text_color: 0xFFFFFF
+            text_align: LEFT
+            long_mode: DOT
+            text_font: ui_28
+        - label:
+            id: rl_status
+            x: 64
+            y: 62
+            width: 340
+            height: 20
+            text: "Idle"
+            text_color: 0x9C9CD9
+            text_align: LEFT
+            long_mode: DOT
+            text_font: ui_16
+
+        - obj:
+            id: radio_list_refresh
+            x: 424
+            y: 34
+            width: 48
+            height: 48
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 24
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            pressed:
+              bg_color: 0x2A3352
+            on_click:
+              - script.execute: radio_fetch
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\U000F0450"
+                  text_font: mdi_32
+                  text_align: CENTER
+                  text_color: 0x9C9CD9
+
+        # ── category tabs (country is the default) ──────────────────────────
+        - obj:
+            id: rl_tab0
+            x: 6
+            y: 86
+            width: 90
+            height: 42
+            # Active-tab colour; radio_refresh repaints it from the theme accent.
+            bg_color: 0x564DCB
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 12
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            on_click:
+              - lambda: 'id(radio).tab_select(0);'
+              - script.execute: radio_fetch_if_needed
+            widgets:
+              - label:
+                  id: rl_tab0_label
+                  align: CENTER
+                  text: "Country"
+                  text_font: ui_16
+                  text_align: CENTER
+                  text_color: 0xFFFFFF
+        - obj:
+            id: rl_tab1
+            x: 100
+            y: 86
+            width: 90
+            height: 42
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 12
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            on_click:
+              - lambda: 'id(radio).tab_select(1);'
+              - script.execute: radio_fetch_if_needed
+            widgets:
+              - label:
+                  id: rl_tab1_label
+                  align: CENTER
+                  text: "Popular"
+                  text_font: ui_16
+                  text_align: CENTER
+                  text_color: 0x9C9CD9
+        - obj:
+            id: rl_tab2
+            x: 194
+            y: 86
+            width: 90
+            height: 42
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 12
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            on_click:
+              - lambda: 'id(radio).tab_select(2);'
+              - script.execute: radio_fetch_if_needed
+            widgets:
+              - label:
+                  id: rl_tab2_label
+                  align: CENTER
+                  text: "Category"
+                  text_font: ui_16
+                  text_align: CENTER
+                  text_color: 0x9C9CD9
+        - obj:
+            id: rl_tab3
+            x: 288
+            y: 86
+            width: 90
+            height: 42
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 12
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            on_click:
+              - lambda: 'id(radio).tab_select(3);'
+              - script.execute: radio_fetch_if_needed
+            widgets:
+              - label:
+                  id: rl_tab3_label
+                  align: CENTER
+                  text: "Language"
+                  text_font: ui_16
+                  text_align: CENTER
+                  text_color: 0x9C9CD9
+        - obj:
+            id: rl_tab4
+            x: 382
+            y: 86
+            width: 90
+            height: 42
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 12
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            on_click:
+              - lambda: 'id(radio).tab_select(4);'
+              - script.execute: radio_fetch_if_needed
+            widgets:
+              - label:
+                  id: rl_tab4_label
+                  align: CENTER
+                  text: "\U000F04CE"
+                  text_font: mdi_32
+                  text_align: CENTER
+                  text_color: 0xFBBF24
+
+        # ── rows (page size is mirrored in sh_radio.h PAGE_SIZE) ────────────
+        - obj:
+            id: rl_row0
+            x: 10
+            y: 164
+            width: 460
+            height: 52
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 12
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            pressed:
+              bg_color: 0x243050
+            on_click:
+              - lambda: 'if (id(radio).row_click(0)) id(radio_fetch)->execute();'
+            widgets:
+              - label:
+                  id: rl_row0_flag
+                  align: LEFT_MID
+                  x: 8
+                  y: 0
+                  radius: 6
+                  bg_color: 0x243050
+                  border_width: 1
+                  border_color: 0x3A4770
+                  pad_left: 7
+                  pad_right: 7
+                  pad_top: 3
+                  pad_bottom: 3
+                  text: "DE"
+                  text_font: ui_16
+                  text_align: CENTER
+                  text_color: 0x9C9CD9
+              - label:
+                  id: rl_row0_name
+                  x: 66
+                  # FULL row height with pad_top centring the single line:
+                  # ui_24's line height is 29, and LVGL's SCROLL long mode
+                  # animates VERTICALLY when the box is shorter than the
+                  # text, which made short names (Cyrillic ones especially,
+                  # e.g. 'Европа Плюс') bounce. A 52 px box (content 41 px)
+                  # can never be shorter than one line.
+                  y: 0
+                  width: 328
+                  height: 52
+                  pad_top: 11
+                  text: "-"
+                  text_font: ui_24
+                  text_align: LEFT
+                  long_mode: SCROLL
+                  text_color: 0xFFFFFF
+              - obj:
+                  id: rl_row0_star
+                  x: 402
+                  y: 3
+                  width: 46
+                  height: 46
+                  bg_color: 0x0F1424
+                  border_width: 1
+                  border_color: 0x2A3352
+                  radius: 23
+                  pad_all: 0
+                  clickable: true
+                  scrollable: false
+                  scrollbar_mode: "OFF"
+                  pressed:
+                    bg_color: 0x2A3352
+                  on_click:
+                    - lambda: 'id(radio).row_star_click(0);'
+                  widgets:
+                    - label:
+                        id: rl_row0_star_ico
+                        align: CENTER
+                        text: "\U000F04D2"
+                        text_font: mdi_32
+                        text_align: CENTER
+                        text_color: 0xFBBF24
+
+        - obj:
+            id: rl_row1
+            x: 10
+            y: 218
+            width: 460
+            height: 52
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 12
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            pressed:
+              bg_color: 0x243050
+            on_click:
+              - lambda: 'if (id(radio).row_click(1)) id(radio_fetch)->execute();'
+            widgets:
+              - label:
+                  id: rl_row1_flag
+                  align: LEFT_MID
+                  x: 8
+                  y: 0
+                  radius: 6
+                  bg_color: 0x243050
+                  border_width: 1
+                  border_color: 0x3A4770
+                  pad_left: 7
+                  pad_right: 7
+                  pad_top: 3
+                  pad_bottom: 3
+                  text: "DE"
+                  text_font: ui_16
+                  text_align: CENTER
+                  text_color: 0x9C9CD9
+              - label:
+                  id: rl_row1_name
+                  x: 66
+                  # FULL row height with pad_top centring the single line:
+                  # ui_24's line height is 29, and LVGL's SCROLL long mode
+                  # animates VERTICALLY when the box is shorter than the
+                  # text, which made short names (Cyrillic ones especially,
+                  # e.g. 'Европа Плюс') bounce. A 52 px box (content 41 px)
+                  # can never be shorter than one line.
+                  y: 0
+                  width: 328
+                  height: 52
+                  pad_top: 11
+                  text: "-"
+                  text_font: ui_24
+                  text_align: LEFT
+                  long_mode: SCROLL
+                  text_color: 0xFFFFFF
+              - obj:
+                  id: rl_row1_star
+                  x: 402
+                  y: 3
+                  width: 46
+                  height: 46
+                  bg_color: 0x0F1424
+                  border_width: 1
+                  border_color: 0x2A3352
+                  radius: 23
+                  pad_all: 0
+                  clickable: true
+                  scrollable: false
+                  scrollbar_mode: "OFF"
+                  pressed:
+                    bg_color: 0x2A3352
+                  on_click:
+                    - lambda: 'id(radio).row_star_click(1);'
+                  widgets:
+                    - label:
+                        id: rl_row1_star_ico
+                        align: CENTER
+                        text: "\U000F04D2"
+                        text_font: mdi_32
+                        text_align: CENTER
+                        text_color: 0xFBBF24
+
+        - obj:
+            id: rl_row2
+            x: 10
+            y: 272
+            width: 460
+            height: 52
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 12
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            pressed:
+              bg_color: 0x243050
+            on_click:
+              - lambda: 'if (id(radio).row_click(2)) id(radio_fetch)->execute();'
+            widgets:
+              - label:
+                  id: rl_row2_flag
+                  align: LEFT_MID
+                  x: 8
+                  y: 0
+                  radius: 6
+                  bg_color: 0x243050
+                  border_width: 1
+                  border_color: 0x3A4770
+                  pad_left: 7
+                  pad_right: 7
+                  pad_top: 3
+                  pad_bottom: 3
+                  text: "DE"
+                  text_font: ui_16
+                  text_align: CENTER
+                  text_color: 0x9C9CD9
+              - label:
+                  id: rl_row2_name
+                  x: 66
+                  # FULL row height with pad_top centring the single line:
+                  # ui_24's line height is 29, and LVGL's SCROLL long mode
+                  # animates VERTICALLY when the box is shorter than the
+                  # text, which made short names (Cyrillic ones especially,
+                  # e.g. 'Европа Плюс') bounce. A 52 px box (content 41 px)
+                  # can never be shorter than one line.
+                  y: 0
+                  width: 328
+                  height: 52
+                  pad_top: 11
+                  text: "-"
+                  text_font: ui_24
+                  text_align: LEFT
+                  long_mode: SCROLL
+                  text_color: 0xFFFFFF
+              - obj:
+                  id: rl_row2_star
+                  x: 402
+                  y: 3
+                  width: 46
+                  height: 46
+                  bg_color: 0x0F1424
+                  border_width: 1
+                  border_color: 0x2A3352
+                  radius: 23
+                  pad_all: 0
+                  clickable: true
+                  scrollable: false
+                  scrollbar_mode: "OFF"
+                  pressed:
+                    bg_color: 0x2A3352
+                  on_click:
+                    - lambda: 'id(radio).row_star_click(2);'
+                  widgets:
+                    - label:
+                        id: rl_row2_star_ico
+                        align: CENTER
+                        text: "\U000F04D2"
+                        text_font: mdi_32
+                        text_align: CENTER
+                        text_color: 0xFBBF24
+
+        - obj:
+            id: rl_row3
+            x: 10
+            y: 326
+            width: 460
+            height: 52
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 12
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            pressed:
+              bg_color: 0x243050
+            on_click:
+              - lambda: 'if (id(radio).row_click(3)) id(radio_fetch)->execute();'
+            widgets:
+              - label:
+                  id: rl_row3_flag
+                  align: LEFT_MID
+                  x: 8
+                  y: 0
+                  radius: 6
+                  bg_color: 0x243050
+                  border_width: 1
+                  border_color: 0x3A4770
+                  pad_left: 7
+                  pad_right: 7
+                  pad_top: 3
+                  pad_bottom: 3
+                  text: "DE"
+                  text_font: ui_16
+                  text_align: CENTER
+                  text_color: 0x9C9CD9
+              - label:
+                  id: rl_row3_name
+                  x: 66
+                  # FULL row height with pad_top centring the single line:
+                  # ui_24's line height is 29, and LVGL's SCROLL long mode
+                  # animates VERTICALLY when the box is shorter than the
+                  # text, which made short names (Cyrillic ones especially,
+                  # e.g. 'Европа Плюс') bounce. A 52 px box (content 41 px)
+                  # can never be shorter than one line.
+                  y: 0
+                  width: 328
+                  height: 52
+                  pad_top: 11
+                  text: "-"
+                  text_font: ui_24
+                  text_align: LEFT
+                  long_mode: SCROLL
+                  text_color: 0xFFFFFF
+              - obj:
+                  id: rl_row3_star
+                  x: 402
+                  y: 3
+                  width: 46
+                  height: 46
+                  bg_color: 0x0F1424
+                  border_width: 1
+                  border_color: 0x2A3352
+                  radius: 23
+                  pad_all: 0
+                  clickable: true
+                  scrollable: false
+                  scrollbar_mode: "OFF"
+                  pressed:
+                    bg_color: 0x2A3352
+                  on_click:
+                    - lambda: 'id(radio).row_star_click(3);'
+                  widgets:
+                    - label:
+                        id: rl_row3_star_ico
+                        align: CENTER
+                        text: "\U000F04D2"
+                        text_font: mdi_32
+                        text_align: CENTER
+                        text_color: 0xFBBF24
+
+        - obj:
+            id: rl_row4
+            x: 10
+            y: 380
+            width: 460
+            height: 52
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 12
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            pressed:
+              bg_color: 0x243050
+            on_click:
+              - lambda: 'if (id(radio).row_click(4)) id(radio_fetch)->execute();'
+            widgets:
+              - label:
+                  id: rl_row4_flag
+                  align: LEFT_MID
+                  x: 8
+                  y: 0
+                  radius: 6
+                  bg_color: 0x243050
+                  border_width: 1
+                  border_color: 0x3A4770
+                  pad_left: 7
+                  pad_right: 7
+                  pad_top: 3
+                  pad_bottom: 3
+                  text: "DE"
+                  text_font: ui_16
+                  text_align: CENTER
+                  text_color: 0x9C9CD9
+              - label:
+                  id: rl_row4_name
+                  x: 66
+                  # FULL row height with pad_top centring the single line:
+                  # ui_24's line height is 29, and LVGL's SCROLL long mode
+                  # animates VERTICALLY when the box is shorter than the
+                  # text, which made short names (Cyrillic ones especially,
+                  # e.g. 'Европа Плюс') bounce. A 52 px box (content 41 px)
+                  # can never be shorter than one line.
+                  y: 0
+                  width: 328
+                  height: 52
+                  pad_top: 11
+                  text: "-"
+                  text_font: ui_24
+                  text_align: LEFT
+                  long_mode: SCROLL
+                  text_color: 0xFFFFFF
+              - obj:
+                  id: rl_row4_star
+                  x: 402
+                  y: 3
+                  width: 46
+                  height: 46
+                  bg_color: 0x0F1424
+                  border_width: 1
+                  border_color: 0x2A3352
+                  radius: 23
+                  pad_all: 0
+                  clickable: true
+                  scrollable: false
+                  scrollbar_mode: "OFF"
+                  pressed:
+                    bg_color: 0x2A3352
+                  on_click:
+                    - lambda: 'id(radio).row_star_click(4);'
+                  widgets:
+                    - label:
+                        id: rl_row4_star_ico
+                        align: CENTER
+                        text: "\U000F04D2"
+                        text_font: mdi_32
+                        text_align: CENTER
+                        text_color: 0xFBBF24
+
+        # ── loading spinner ────────────────────────────────────────────────
+        # Shown (by radio_refresh) while the visible page has no resident rows
+        # yet, so a page that still has to be fetched shows a spinner instead of
+        # five blank row cards. It sits above the rows and below the pager.
+        # SAME STYLE AS THE BOOT SPINNER (pages/loading.yaml: 120 deg arc,
+        # 1000 ms per turn, grey track) but smaller — 56 px instead of 120 —
+        # with the indicator in the theme accent (the boot one stays
+        # white/grey, it is the reference look).
+        - spinner:
+            id: rl_spinner
+            x: 212
+            y: 260
+            width: 56
+            height: 56
+            arc_length: 120deg
+            spin_time: 1000ms
+            arc_color: 0x6D6D6D
+            hidden: true
+            indicator:
+              arc_width: 5
+              styles: [accent_arc]
+
+        # ── error banner ───────────────────────────────────────────────────
+        # Shown (by radio_refresh) when the last directory request FAILED and
+        # the visible page still has no resident rows. A failed page must be a
+        # visible message, never a spinner that runs forever; the two labels sit
+        # in the middle of the row area (the spinner is hidden whenever these
+        # are visible, so they never overlap).
+        - label:
+            id: rl_error
+            x: 20
+            y: 246
+            width: 440
+            height: 40
+            text: "Could not load this page"
+            text_color: 0xFBBF24
+            text_align: CENTER
+            long_mode: DOT
+            text_font: ui_24
+            hidden: true
+        - label:
+            id: rl_error_hint
+            x: 20
+            y: 290
+            width: 440
+            height: 22
+            text: "Tap refresh to retry"
+            text_color: 0x9C9CD9
+            text_align: CENTER
+            long_mode: DOT
+            text_font: ui_16
+            hidden: true
+
+        # ── pager ───────────────────────────────────────────────────────────
+        - obj:
+            id: rl_page_prev
+            x: 132
+            y: 436
+            width: 56
+            height: 36
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 12
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            pressed:
+              bg_color: 0x2A3352
+            on_click:
+              # prev_page() wraps from page 1 to the REAL last page (the total
+              # comes from radio-browser's category count) and returns true when
+              # the rows for that page still have to be fetched.
+              - lambda: 'if (id(radio).prev_page()) id(radio_fetch)->execute();'
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\U000F0141"
+                  text_font: mdi_32
+                  text_align: CENTER
+                  text_color: 0xFFFFFF
+        - label:
+            id: rl_page_label
+            x: 196
+            y: 443
+            width: 88
+            height: 22
+            text: "1/1"
+            text_color: 0xFFFFFF
+            text_align: CENTER
+            text_font: ui_16
+        - obj:
+            id: rl_page_next
+            x: 292
+            y: 436
+            width: 56
+            height: 36
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 12
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            pressed:
+              bg_color: 0x2A3352
+            on_click:
+              # next_page() wraps from the REAL last page back to page 1 and
+              # returns true when the first page's rows still have to be fetched.
+              - lambda: 'if (id(radio).next_page()) id(radio_fetch)->execute();'
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\U000F0142"
+                  text_font: mdi_32
+                  text_align: CENTER
+                  text_color: 0xFFFFFF

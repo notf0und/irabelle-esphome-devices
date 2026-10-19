@@ -1,0 +1,8 @@
+packages:
+  - !include api.yaml
+  - !include button.yaml
+  - !include internal_temperature.yaml
+  - !include logger.yaml
+  - !include ota.yaml
+  - !include time.yaml
+  - !include uptime.yaml

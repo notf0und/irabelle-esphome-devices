@@ -1,0 +1,4 @@
+version: "1.0"
+description: "Waveshare Duplex Audio with ESP AFE"
+dependencies:
+  espressif/esp-sr: "2.0.0"

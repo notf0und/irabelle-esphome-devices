@@ -1,0 +1,36 @@
+pages:
+  - <<: !include pages/loading.yaml
+    id: loading_page
+
+  # main -> apps, and back. The Apps page exists only when at least one app
+  # package is included: each app increments `app_count` on boot and this
+  # swipe-left is gated on it, so a device with no apps never shows the Apps
+  # screen (matching "if there's no apps, the App screen should not appear").
+  - <<: !include pages/main.yaml
+    id: main_page
+    on_load:
+      - script.execute: apply_theme
+    on_swipe_left:
+      - if:
+          condition:
+            lambda: 'return id(app_count) > 0;'
+          then:
+            - lvgl.page.show:
+                lvgl_id: ${id}_lvgl
+                id: apps_page
+            - lvgl.widget.show:
+                id: topbar
+
+  # Apps page: the base owns only the title/background. Each app package adds
+  # its own tile (and its own pages) — see apps/lvgl/radio.yaml and
+  # apps/waveshare/settings.yaml.
+  - <<: !include pages/apps.yaml
+    id: apps_page
+    on_load:
+      - script.execute: apply_theme
+    on_swipe_right:
+      - lvgl.page.show:
+          lvgl_id: ${id}_lvgl
+          id: main_page
+      - lvgl.widget.hide:
+          id: topbar

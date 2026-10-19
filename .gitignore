@@ -1,0 +1,10 @@
+# ESPHome build artefacts
+.esphome/
+.pioenvs/
+.pio/
+*.pyc
+__pycache__/
+
+# never commit per-user secrets
+secrets.yaml
+!examples/secrets.yaml

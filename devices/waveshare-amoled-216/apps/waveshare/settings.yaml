@@ -1,0 +1,279 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Settings app — self-contained package.
+#
+# Add it to a device with:
+#   packages:
+#     waveshare_settings: !include
+#       file: apps/waveshare/settings.yaml
+#
+# It contributes the settings page + its sound/display/battery sub-pages, their
+# navigation handlers (the menus/back buttons/brightness slider carry their own
+# actions in the page files), and the "Settings" tile on the Apps page. Removing
+# the package removes the whole app and its tile.
+# ─────────────────────────────────────────────────────────────────────────────
+
+lvgl:
+  - id: !extend ${id}_lvgl
+    pages:
+      - <<: !include settings/main.yaml
+        id: settings_page
+        on_swipe_right:
+          - lvgl.page.show:
+              lvgl_id: ${id}_lvgl
+              id: apps_page
+
+      - <<: !include settings/sound.yaml
+        id: sound_page
+
+      - <<: !include settings/display.yaml
+        id: display_page
+        on_load:
+          # Re-apply the theme (the styles are global) and make sure the
+          # dropdown shows the colour that is actually stored.
+          - script.execute: apply_theme
+          - script.execute: settings_sync_theme_ui
+
+      - <<: !include settings/battery.yaml
+        id: battery_page
+
+      # App tile on the Apps page.
+      # NO container (see the Radio tile): a bigger icon with the name below it,
+      # the transparent object only provides the tap target.
+      - id: !extend apps_page
+        widgets:
+          - obj:
+              id: app_tile_settings
+              x: 245
+              y: 96
+              width: 210
+              height: 156
+              bg_opa: 0%
+              border_width: 0
+              radius: 0
+              pad_all: 0
+              clickable: true
+              scrollable: false
+              scrollbar_mode: "OFF"
+              on_click:
+                - lvgl.page.show:
+                    lvgl_id: ${id}_lvgl
+                    id: settings_page
+              widgets:
+                - label:
+                    id: app_settings_icon
+                    x: 0
+                    y: 16
+                    width: 210
+                    height: 68
+                    text: "\U000F0493"
+                    text_font: mdi_64
+                    text_align: CENTER
+                    # Theme accent, like the Radio tile.
+                    styles: [accent_text]
+                - label:
+                    id: app_settings_name
+                    x: 0
+                    y: 92
+                    width: 210
+                    height: 38
+                    text: "Settings"
+                    text_color: 0xFFFFFF
+                    text_align: CENTER
+                    text_font: ui_28
+
+# Register the app so the main page knows there is at least one app to show.
+esphome:
+  on_boot:
+    - priority: -100
+      then:
+        - lambda: 'id(app_count)++;'
+
+script:
+  # Point the accent dropdown at the colour that is actually stored. Runs when
+  # the Display page loads (never at build time: the global's NVS restore may
+  # not have happened yet then, and re-selecting a stale index would fire the
+  # dropdown's on_value). Re-selection is harmless because on_value only
+  # applies a colour that DIFFERS from the stored one.
+  - id: settings_sync_theme_ui
+    mode: restart
+    then:
+      - lambda: |-
+          lv_obj_t *dd = id(accent_dropdown)->obj;
+          if (dd == nullptr) return;
+          const char *opts = lv_dropdown_get_options(dd);
+          const uint32_t want = id(accent_color);
+          uint32_t idx = 0;
+          const char *p = opts;
+          while (p != nullptr && *p != '\0') {
+            const char *nl = strchr(p, '\n');
+            const size_t len = nl ? (size_t) (nl - p) : strlen(p);
+            if (len >= 6) {
+              char buf[7];
+              memcpy(buf, p + len - 6, 6);
+              buf[6] = '\0';
+              if ((uint32_t) strtoul(buf, nullptr, 16) == want) {
+                if (lv_dropdown_get_selected(dd) != idx)
+                  lv_dropdown_set_selected(dd, idx);
+                return;
+              }
+            }
+            if (nl == nullptr) break;
+            p = nl + 1;
+            idx++;
+          }
+
+text_sensor:
+  # Current accent colour (what apply_theme pushed into the styles). Purely a
+  # verification aid: lets a test read back what the UI is themed with.
+  - platform: template
+    name: "Accent Colour"
+    id: ${id}_accent_colour
+    icon: mdi:palette
+    entity_category: diagnostic
+    update_interval: 5s
+    lambda: |-
+      char buf[8];
+      snprintf(buf, sizeof(buf), "%06X", (unsigned) id(accent_color));
+      return {std::string(buf)};
+
+  # Geometry readback for the Settings tile (request 3): the container must be
+  # gone (bg_opa 0, no border, no radius) while the icon is bigger and the whole
+  # tile area is still clickable.
+  - platform: template
+    name: "Settings Tile Geometry"
+    id: ${id}_settings_ui_geometry
+    icon: mdi:vector-rectangle
+    entity_category: diagnostic
+    update_interval: 5s
+    lambda: |-
+      lv_obj_t *t = id(app_tile_settings);
+      if (t == nullptr) return {std::string("ui-not-built")};
+      std::string s = "tile=" + std::to_string((int) lv_obj_get_x(t)) + "," +
+                      std::to_string((int) lv_obj_get_y(t)) + " " + std::to_string((int) lv_obj_get_width(t)) +
+                      "x" + std::to_string((int) lv_obj_get_height(t));
+      s += " bgopa=" + std::to_string((int) ((lv_obj_get_style_bg_opa(t, LV_PART_MAIN) * 100) / 255)) + "%";
+      s += " border=" + std::to_string((int) lv_obj_get_style_border_width(t, LV_PART_MAIN));
+      s += " radius=" + std::to_string((int) lv_obj_get_style_radius(t, LV_PART_MAIN));
+      s += " click=" + std::string(lv_obj_has_flag(t, LV_OBJ_FLAG_CLICKABLE) ? "1" : "0");
+      s += " icon_fh=" +
+           std::to_string((int) lv_font_get_line_height(lv_obj_get_style_text_font(id(app_settings_icon), LV_PART_MAIN)));
+      s += " name=" + std::string(lv_label_get_text(id(app_settings_name)));
+      auto hexc = [](lv_color_t c) {
+        unsigned v = ((unsigned) c.red << 16) | ((unsigned) c.green << 8) | (unsigned) c.blue;
+        char b[8];
+        snprintf(b, sizeof(b), "%06X", v);
+        return std::string(b);
+      };
+      s += " tile_icon=" + hexc(lv_obj_get_style_text_color(id(app_settings_icon), LV_PART_MAIN));
+      // Accent-colour control: the dropdown's option count + current index, and
+      // the Display page's brightness slider indicator (must follow the theme).
+      lv_obj_t *dd = id(accent_dropdown)->obj;
+      int nopts = 0;
+      if (dd != nullptr) {
+        const char *o = lv_dropdown_get_options(dd);
+        if (o != nullptr) {
+          nopts = 1;
+          for (const char *q = o; *q; q++)
+            if (*q == '\n') nopts++;
+        }
+      }
+      s += " dd_opts=" + std::to_string(nopts) +
+           " dd_sel=" + std::to_string(dd == nullptr ? -1 : (int) lv_dropdown_get_selected(dd));
+      s += " swatch=" + hexc(lv_obj_get_style_bg_color(id(accent_swatch), LV_PART_MAIN));
+      s += " slider_ind=" +
+           hexc(lv_obj_get_style_bg_color(id(display_page_brightness_slider), LV_PART_INDICATOR));
+      if (s.size() > 380) s.resize(380);
+      return {s};
+
+select:
+  # Home-Assistant/API side of the SAME palette the on-screen dropdown offers
+  # (settings/display.yaml). Keep the two option lists identical: both parse the
+  # "#RRGGBB" suffix of the option text, and this one republishes the string that
+  # matches the stored global, so the two controls cannot drift apart. It is also
+  # how an automated test changes the colour without a touch gesture.
+  - platform: template
+    name: "Accent Colour Select"
+    id: ${id}_accent_select
+    entity_category: config
+    icon: mdi:palette
+    optimistic: false
+    update_interval: 5s
+    options:
+      - "Violet #564DCB"
+      - "Indigo #4F46E5"
+      - "Blue #2563EB"
+      - "Sky #0EA5E9"
+      - "Cyan #06B6D4"
+      - "Teal #14B8A6"
+      - "Emerald #10B981"
+      - "Green #22C55E"
+      - "Lime #84CC16"
+      - "Yellow #EAB308"
+      - "Amber #F59E0B"
+      - "Orange #F97316"
+      - "Coral #FB7185"
+      - "Red #EF4444"
+      - "Rose #F43F5E"
+      - "Pink #EC4899"
+      - "Fuchsia #D946EF"
+      - "Purple #A855F7"
+      - "Slate #64748B"
+      - "White #F1F5F9"
+    lambda: |-
+      // Return the dropdown's option text for the stored colour (exact string,
+      // so it always matches one of the options above).
+      lv_obj_t *dd = id(accent_dropdown)->obj;
+      if (dd == nullptr) return std::string("Violet #564DCB");
+      const char *opts = lv_dropdown_get_options(dd);
+      const uint32_t want = id(accent_color);
+      const char *p = opts;
+      while (p != nullptr && *p != '\0') {
+        const char *nl = strchr(p, '\n');
+        const size_t len = nl ? (size_t) (nl - p) : strlen(p);
+        if (len >= 6) {
+          char buf[7];
+          memcpy(buf, p + len - 6, 6);
+          buf[6] = '\0';
+          if ((uint32_t) strtoul(buf, nullptr, 16) == want) return std::string(p, len);
+        }
+        if (nl == nullptr) break;
+        p = nl + 1;
+      }
+      return std::string("Violet #564DCB");
+    set_action:
+      - lambda: |-
+          const std::string t(x.c_str());
+          const size_t n = t.size();
+          if (n >= 7 && t[n - 7] == '#') {
+            id(accent_color) = (uint32_t) strtoul(t.c_str() + n - 6, nullptr, 16);
+          }
+      - script.execute: apply_theme
+      - script.execute: settings_sync_theme_ui
+
+# Diagnostic: show the settings page from the API (a touch gesture cannot be
+# driven over the native API).
+button:
+  - platform: template
+    name: "Test Show Settings"
+    id: ${id}_test_show_settings_btn
+    icon: mdi:cog
+    entity_category: diagnostic
+    on_press:
+      - script.execute: wake_display
+      - lvgl.page.show:
+          lvgl_id: ${id}_lvgl
+          id: settings_page
+
+  # The colour dropdown lives on the Display sub-page; this shows it from the
+  # API (a touch gesture cannot be driven over the native API).
+  - platform: template
+    name: "Test Show Display"
+    id: ${id}_test_show_display_btn
+    icon: mdi:brightness-6
+    entity_category: diagnostic
+    on_press:
+      - script.execute: wake_display
+      - lvgl.page.show:
+          lvgl_id: ${id}_lvgl
+          id: display_page
+

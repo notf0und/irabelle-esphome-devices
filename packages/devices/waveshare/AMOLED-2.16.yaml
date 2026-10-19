@@ -1,0 +1,22 @@
+packages:
+  - !include AMOLED-2.16/lvgl.yaml
+
+# Board-level LVGL glue that belongs to no app: the volume popup slider on the
+# top layer (it is reachable from every page). The Settings app's pages, menu
+# handlers and sub-pages now live in apps/waveshare/settings.yaml; the radio
+# app lives in apps/lvgl/radio.yaml; the base only owns loading/main/apps.
+lvgl:
+  - id: !extend ${id}_lvgl
+    top_layer:
+      widgets:
+        - obj:
+            id: !extend volume_popup_card
+            widgets:
+              - slider:
+                  id: !extend volume_slider
+                  value: !lambda 'return (int)(id(${id}_media_player).volume * 100);'
+                  on_value:
+                    - lambda: 'id(volume_popup_dismiss_at) = millis() + 3000;'
+                    - media_player.volume_set:
+                        id: ${id}_media_player
+                        volume: !lambda 'return (x / 100.0);'

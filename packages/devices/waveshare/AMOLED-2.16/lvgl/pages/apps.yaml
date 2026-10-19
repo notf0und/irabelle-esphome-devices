@@ -1,0 +1,41 @@
+      id: canvas_apps
+      bg_color: 0x000000
+      pad_all: 0
+      scrollbar_mode: "OFF"
+      widgets:
+        # The Apps title is ASCII-only, so the built-in montserrat font is fine
+        # here; the hint below is NOT (see its comment).
+        - label:
+            id: apps_title
+            x: 20
+            y: 44
+            width: 440
+            height: 34
+            text: "Apps"
+            text_color: 0xFFFFFF
+            text_align: LEFT
+            text_font: montserrat_32
+
+        # ── App tiles ──────────────────────────────────────────────────────
+        # The tiles are NOT defined here: each app package adds its own tile to
+        # this page with an `!extend apps_page`. See apps/lvgl/radio.yaml
+        # (app_tile_radio) and apps/waveshare/settings.yaml (app_tile_settings).
+        # A device with no app packages never reaches this page at all.
+
+        # The hint used to be `montserrat_16`, LVGL's BUILT-IN Montserrat, which
+        # carries ASCII only: its middot (U+00B7 "·") rendered as the font's
+        # .notdef box, i.e. "Tap an app [] swipe right for home". The radio
+        # package's `ui_16` is the same typeface compiled with GF_Latin_Core
+        # (319 codepoints, U+00B7 included - checked against
+        # esphome_glyphsets.unicodes_per_glyphset), so the middot renders.
+        - label:
+            id: apps_hint
+            x: 20
+            y: 440
+            width: 440
+            height: 24
+            text: "Tap an app  ·  swipe right for home"
+            text_color: 0x6B7280
+            text_align: LEFT
+            text_font: ui_16
+

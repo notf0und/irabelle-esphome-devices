@@ -1,0 +1,149 @@
+      id: canvas_3
+      bg_color: 0x000000
+      pad_all: 0
+      widgets:
+        - obj:
+            id: clk_card
+            x: 0
+            y: 0
+            width: 480
+            height: 480
+            bg_opa: 0%
+            border_width: 0
+            pad_all: 0
+            scrollbar_mode: "OFF"
+            widgets:
+              - label:
+                  id: request_text
+                  x: 20
+                  y: 35
+                  width: 440
+                  # The whole utterance is shown (no more 30-character pager) and
+                  # it now stays up for the entire answer, so it wraps over up to
+                  # three lines instead of clipping at one. The weather icon
+                  # starts at y 141.
+                  height: 100
+                  text: ""
+                  hidden: true
+                  text_color: 0xFFFFFF
+                  text_align: CENTER
+                  long_mode: WRAP
+                  text_font: montserrat_26
+              - label:
+                  id: weather_icon
+                  x: 100
+                  y: 141
+                  width: 128
+                  height: 128
+                  text: "\U000F0599"
+                  text_font: mdi_128
+                  text_align: CENTER
+                  # Theme colour (default 0x564DCB). This icon is the reference
+                  # colour the rest of the UI follows; it is themed so a change
+                  # in Settings -> Display moves it too.
+                  styles: [accent_text]
+              - label:
+                  id: clk_time
+                  x: 19
+                  y: 217
+                  width: 442
+                  height: 52
+                  text: "--:--"
+                  text_color: 0xF1F5F9
+                  text_align: CENTER
+                  long_mode: CLIP
+                  text_font: montserrat_48
+              - label:
+                  id: clk_date
+                  x: 19
+                  y: 269
+                  width: 442
+                  height: 32
+                  text: ""
+                  text_color: 0x8E9FB8
+                  text_align: CENTER
+                  long_mode: CLIP
+                  text_font: montserrat_28
+              - label:
+                  id: response_text
+                  # Bottom-anchored and auto-height: the caption grows upward as
+                  # the spoken sentence needs more lines, instead of being clipped
+                  # by a fixed box. The bottom edge sits just above the pulsing
+                  # status line (a 50 px line widget centred 25 px above the
+                  # canvas bottom, so its visible rule is at ~y 430), which leaves
+                  # roughly 120 px — four lines of montserrat_24 — before it would
+                  # reach the date.
+                  align: BOTTOM_MID
+                  y: -62
+                  width: 460
+                  height: SIZE_CONTENT
+                  hidden: true
+                  text: ""
+                  text_color: 0xFFFFFF
+                  text_align: CENTER
+                  long_mode: WRAP
+                  text_font: montserrat_24
+              - line:
+                  id: status_line
+                  x: 0
+                  y: -25
+                  width: 240
+                  height: 50
+                  hidden: true
+                  align: BOTTOM_MID
+                  points:
+                    - 10, 25
+                    - 230, 25
+                  line_width: 9
+                  # The wake-word bar follows the theme accent.
+                  styles: [accent_line]
+                  line_rounded: true
+                  opa: 100%
+
+
+              - obj:
+                  id: timer_card
+                  x: 178
+                  y: 4
+                  width: 125
+                  height: 30
+                  bg_color: 0x8E9FB8
+                  hidden: true
+                  bg_opa: 60%
+                  border_width: 1
+                  border_color: 0x8E9FB8
+                  radius: 32
+                  scrollbar_mode: "OFF"
+                  pad_all: 0
+                  widgets:
+                    - label:
+                        id: timer_icon
+                        x: 2
+                        y: -2
+                        width: 32
+                        height: 32
+                        text: "󱑕"
+                        text_font: mdi_32
+                        text_align: CENTER
+                        text_color: 0xFFFFFF
+                    - label:
+                        id: timer_label
+                        x: 27
+                        y: 0
+                        width: 89
+                        height: 30
+                        text: "12:38"
+                        text_color: 0xFFFFFF
+                        text_align: CENTER
+                        text_font: montserrat_24
+              - label:
+                  id: connection_icon
+                  x: 420
+                  y: 27
+                  width: 48
+                  height: 48
+                  text: "󰖪"
+                  text_font: mdi_32
+                  hidden: true
+                  text_align: CENTER
+                  text_color: 0x8E9FB8

@@ -1,0 +1,275 @@
+# lvgl:
+#   pages:
+      id: canvas_5
+      bg_color: 0x000000
+      pad_all: 0
+      scrollbar_mode: "OFF"
+      widgets:
+        - obj:
+            id: display_page_container
+            x: 64
+            y: 60
+            width: 352
+            height: 360
+            bg_color: 0x000000
+            bg_opa: 0%
+            border_opa: 0%
+            outline_opa: 0%
+            pad_all: 0
+            scrollbar_mode: "OFF"
+            widgets:
+              - label:
+                  id: display_page_brightness_label
+                  x: 0
+                  y: 0
+                  width: 350
+                  height: 32
+                  text: "Brightness"
+                  text_color: 0xFFFFFF
+                  text_align: LEFT
+                  text_font: montserrat_28
+              - slider:
+                  id: display_page_brightness_slider
+                  x: 0
+                  y: 44
+                  width: 330
+                  height: 20
+                  value: !lambda 'return (int)(id(${id}_display_backlight).current_values.get_brightness() * 100);'
+                  on_value:
+                    - light.turn_on:
+                        id: ${id}_display_backlight
+                        brightness: !lambda 'return (x / 100.0);'
+                  min_value: 0
+                  max_value: 100
+                  bg_color: 0x374151
+                  radius: 9999
+                  knob:
+                    bg_color: 0xFFFFFF
+                    border_color: 0x9CA3AF
+                    border_width: 1
+                  indicator:
+                    radius: 9999
+                    # theme accent
+                    styles: [accent_fill]
+              - label:
+                  id: always_on_screen_label
+                  x: 0
+                  y: 80
+                  width: 280
+                  height: 32
+                  text: "Always on screen"
+                  text_color: 0xFFFFFF
+                  text_align: LEFT
+                  text_font: montserrat_28
+              - label:
+                  id: show_request_text_label
+                  x: 0
+                  y: 132
+                  width: 280
+                  height: 32
+                  text: "Show request"
+                  text_color: 0xFFFFFF
+                  text_align: LEFT
+                  text_font: montserrat_28
+              - label:
+                  id: show_response_text_label
+                  x: 0
+                  y: 184
+                  width: 280
+                  height: 32
+                  text: "Show response"
+                  text_color: 0xFFFFFF
+                  text_align: LEFT
+                  text_font: montserrat_28
+              - switch:
+                  id: show_response_text_switch
+                  x: 280
+                  y: 184
+                  width: 65
+                  height: 32
+                  state:
+                    checked: true
+                  on_value:
+                    then:
+                      - globals.set:
+                          id: show_response_text
+                          value: !lambda 'return x;'
+                      - if:
+                          condition:
+                            lambda: 'return !x;'
+                          then:
+                            - lvgl.widget.hide:
+                                id: response_text
+                  bg_color: 0x000000
+                  indicator:
+                    bg_color: 0xFF0000
+                  knob:
+                    bg_color: 0xFFFFFF
+                    border_color: 0x9CA3AF
+                    border_width: 1
+              - switch:
+                  id: show_request_text_switch
+                  x: 280
+                  y: 132
+                  width: 65
+                  height: 32
+                  state:
+                    checked: true
+                  on_value:
+                    then:
+                      - globals.set:
+                          id: show_request_text
+                          value: !lambda 'return x;'
+                      - if:
+                          condition:
+                            lambda: 'return !x;'
+                          then:
+                            - lvgl.widget.hide:
+                                id: request_text
+                  bg_color: 0x000000
+                  indicator:
+                    bg_color: 0xFF0000
+                  knob:
+                    bg_color: 0xFFFFFF
+                    border_color: 0x9CA3AF
+                    border_width: 1
+              - switch:
+                  id: always_on_screen_switch
+                  x: 280
+                  y: 80
+                  width: 65
+                  height: 32
+                  state:
+                    checked: true
+                  on_value:
+                    then:
+                      - globals.set:
+                          id: always_on_display
+                          value: !lambda 'return x;'
+                  bg_color: 0x000000
+                  indicator:
+                    bg_color: 0x4F46E5
+                  knob:
+                    bg_color: 0xFFFFFF
+                    border_color: 0x9CA3AF
+                    border_width: 1
+
+              # ── accent colour (UI theme) ────────────────────────────────
+              # One colour for the whole device: app icons, the hero glyph, the
+              # wake-word bar, the play button, the sliders, the active radio
+              # tab and the list spinner. Default is the main page's weather
+              # icon colour. The 20 options ARE the palette: each one ends in
+              # the #RRGGBB of its colour, and the change handler parses the hex
+              # out of the selected text, so the palette has exactly one source
+              # of truth. `settings_sync_theme_ui` (settings.yaml) finds the
+              # stored colour the same way, by scanning the same option strings,
+              # and re-selects it whenever this page opens.
+              - label:
+                  id: accent_label
+                  x: 0
+                  y: 228
+                  width: 240
+                  height: 32
+                  text: "Accent colour"
+                  text_color: 0xFFFFFF
+                  text_align: LEFT
+                  text_font: montserrat_26
+              - dropdown:
+                  id: accent_dropdown
+                  x: 0
+                  y: 268
+                  width: 244
+                  height: 46
+                  options:
+                    - "Violet #564DCB"
+                    - "Indigo #4F46E5"
+                    - "Blue #2563EB"
+                    - "Sky #0EA5E9"
+                    - "Cyan #06B6D4"
+                    - "Teal #14B8A6"
+                    - "Emerald #10B981"
+                    - "Green #22C55E"
+                    - "Lime #84CC16"
+                    - "Yellow #EAB308"
+                    - "Amber #F59E0B"
+                    - "Orange #F97316"
+                    - "Coral #FB7185"
+                    - "Red #EF4444"
+                    - "Rose #F43F5E"
+                    - "Pink #EC4899"
+                    - "Fuchsia #D946EF"
+                    - "Purple #A855F7"
+                    - "Slate #64748B"
+                    - "White #F1F5F9"
+                  text_font: montserrat_20
+                  text_color: 0xFFFFFF
+                  bg_color: 0x1B2138
+                  border_width: 1
+                  border_color: 0x2A3352
+                  radius: 10
+                  pad_left: 10
+                  pad_right: 10
+                  dropdown_list:
+                    text_font: montserrat_20
+                    bg_color: 0x1B2138
+                    border_width: 1
+                    border_color: 0x2A3352
+                    text_color: 0xFFFFFF
+                  on_value:
+                    then:
+                      # The option text ends in "#RRGGBB": apply it everywhere.
+                      # Guarded so that the (deliberately) programmatic sync in
+                      # settings_sync_theme_ui, which re-selects the stored
+                      # colour when this page opens, can never rewrite the
+                      # global: only a colour that actually DIFFERS is applied.
+                      - lambda: |-
+                          const char *t = text.c_str();
+                          const size_t n = strlen(t);
+                          if (n >= 7 && t[n - 7] == '#') {
+                            const uint32_t v = (uint32_t) strtoul(t + n - 6, nullptr, 16);
+                            if (v != id(accent_color)) {
+                              id(accent_color) = v;
+                              id(apply_theme)->execute();
+                            }
+                          }
+
+              # Live preview of the accent + a hint, so the effect is visible
+              # right here (the sliders on this page follow it too).
+              - obj:
+                  id: accent_swatch
+                  x: 258
+                  y: 268
+                  width: 46
+                  height: 46
+                  radius: 23
+                  border_width: 1
+                  border_color: 0x2A3352
+                  pad_all: 0
+                  scrollbar_mode: "OFF"
+                  styles: [accent_fill]
+              - label:
+                  id: accent_hint
+                  x: 0
+                  y: 322
+                  width: 352
+                  height: 22
+                  text: "Applies to icons, radio and sliders"
+                  text_color: 0x8E9FB8
+                  text_align: LEFT
+                  long_mode: DOT
+                  text_font: montserrat_16
+
+        - label:
+            id: display_page_back_button
+            on_release:
+              - lvgl.page.show:
+                  lvgl_id: ${id}_lvgl
+                  id: settings_page
+            x: 12
+            y: 56
+            width: 48
+            height: 48
+            text: "\uF053"
+            text_font: montserrat_42
+            text_align: CENTER
+            text_color: 0xFFFFFF

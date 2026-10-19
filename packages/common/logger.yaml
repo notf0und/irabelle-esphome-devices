@@ -1,0 +1,7 @@
+logger:
+  level: VERY_VERBOSE
+  initial_level: DEBUG
+
+select:
+  - platform: logger
+    name: "Log Level"

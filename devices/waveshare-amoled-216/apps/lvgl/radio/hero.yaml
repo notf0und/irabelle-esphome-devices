@@ -1,0 +1,251 @@
+      id: canvas_radio
+      bg_color: 0x000000
+      pad_all: 0
+      scrollable: false
+      scrollbar_mode: "OFF"
+      widgets:
+        # ── header ──────────────────────────────────────────────────────────
+        - obj:
+            id: radio_back
+            x: 10
+            y: 34
+            width: 52
+            height: 52
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 26
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            pressed:
+              bg_color: 0x2A3352
+            on_click:
+              - lvgl.page.show:
+                  lvgl_id: ${id}_lvgl
+                  id: apps_page
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\U000F0141"
+                  text_font: mdi_32
+                  text_align: CENTER
+                  text_color: 0xFFFFFF
+
+        - label:
+            id: radio_title
+            x: 74
+            y: 34
+            width: 300
+            height: 32
+            text: "Radio"
+            text_color: 0xFFFFFF
+            text_align: LEFT
+            text_font: ui_28
+        - label:
+            id: radio_status
+            x: 74
+            y: 64
+            width: 396
+            height: 22
+            text: "Idle"
+            text_color: 0x9C9CD9
+            text_align: LEFT
+            long_mode: DOT
+            text_font: ui_16
+
+        # ── hero glyph ──────────────────────────────────────────────────────
+        # The 176 px circular "album art" container (and its glow) is gone: the
+        # hero is now a plain, SMALLER (64 px, was 128) radio glyph that sits
+        # directly on the black background, and the title/description move up
+        # into the space the circle used to take.
+        - label:
+            id: radio_disc_icon
+            align: TOP_MID
+            x: 0
+            y: 90
+            width: 480
+            height: 68
+            text: "\U000F0439"
+            text_font: mdi_64
+            text_align: CENTER
+            # Theme colour (default 0x564DCB, the main page's weather-icon colour).
+            styles: [accent_text]
+
+        # ── title / author (now playing) ────────────────────────────────────
+        - label:
+            id: radio_now
+            x: 20
+            y: 162
+            width: 440
+            # 42 >= the ui_32 line height (39). With a shorter box LVGL's SCROLL
+            # long mode animates the text VERTICALLY instead of horizontally and
+            # short names bounce up and down.
+            height: 42
+            text: "Radio"
+            text_color: 0xFFFFFF
+            # CENTER + SCROLL is the "centre it, scroll it only when it does not
+            # fit" mode, verified against the LVGL 9.5 source in this build:
+            # * when the text FITS, no scroll animation is created at all,
+            #   offset.x stays 0 and the CENTER alignment is kept -> centred and
+            #   completely static (zero repaint cost);
+            # * when the text OVERFLOWS, lv_label.c (draw_main) explicitly
+            #   forces the alignment to LEFT for SCROLL/SCROLL_CIRCULAR
+            #   ("in SCROLL and SCROLL_CIRCULAR mode the CENTER and RIGHT are
+            #   pointless ... they will create misalignment") and marquees from
+            #   the string's first character. So nothing is clipped at both ends
+            #   - that clipping only ever happened with long_mode: CLIP.
+            # Speed: no anim_duration is set on purpose. LVGL then uses its
+            # built-in label scroll speed, `lv_anim_speed_clamped(40, 300,
+            # 10000)` = ~40 px/s, capped at 10 s per pass (lv_label.c:35 and
+            # lv_anim.c:522), i.e. well under one screen width per second.
+            text_align: CENTER
+            long_mode: SCROLL
+            text_font: ui_32
+        - label:
+            id: radio_sub
+            x: 20
+            y: 208
+            width: 440
+            # ui_24 line height is 29 -> 30 px box; the description is a size up
+            # from ui_16, moved up with the title.
+            height: 30
+            text: "No station selected"
+            text_color: 0x9C9CD9
+            text_align: CENTER
+            long_mode: DOT
+            text_font: ui_24
+
+        # ── transport: prev / big circular play-pause / next ───────────────
+        - obj:
+            id: radio_prev
+            x: 66
+            y: 274
+            width: 60
+            height: 60
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 30
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            pressed:
+              bg_color: 0x2A3352
+            on_click:
+              - lambda: 'id(radio).prev_station();'
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\U000F04AE"
+                  text_font: mdi_48
+                  text_align: CENTER
+                  text_color: 0xFFFFFF
+
+        - obj:
+            id: radio_playpause
+            x: 198
+            y: 262
+            width: 84
+            height: 84
+            border_width: 0
+            radius: 42
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            # Theme accent (fill + glow + pressed state).
+            styles: [accent_fill, accent_shadow]
+            shadow_opa: 60%
+            shadow_width: 28
+            shadow_spread: 0
+            shadow_offset_x: 3
+            shadow_offset_y: 7
+            # No hardcoded pressed colour any more: dim the themed fill instead.
+            pressed:
+              bg_opa: 75%
+            on_click:
+              - lambda: 'id(radio).toggle_play();'
+            widgets:
+              - label:
+                  id: radio_play_icon
+                  align: CENTER
+                  text: "\U000F040A"
+                  text_font: mdi_48
+                  text_align: CENTER
+                  text_color: 0xFFFFFF
+
+        - obj:
+            id: radio_next
+            x: 354
+            y: 274
+            width: 60
+            height: 60
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 30
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            pressed:
+              bg_color: 0x2A3352
+            on_click:
+              - lambda: 'id(radio).next_station();'
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\U000F04AD"
+                  text_font: mdi_48
+                  text_align: CENTER
+                  text_color: 0xFFFFFF
+
+        # ── station-list handle (the discoverable hint for swipe-up) ───────
+        - obj:
+            id: radio_handle
+            x: 150
+            y: 428
+            width: 180
+            height: 38
+            bg_color: 0x1B2138
+            border_width: 1
+            border_color: 0x2A3352
+            radius: 19
+            pad_all: 0
+            clickable: true
+            scrollable: false
+            scrollbar_mode: "OFF"
+            pressed:
+              bg_color: 0x2A3352
+            on_click:
+              - lvgl.page.show:
+                  lvgl_id: ${id}_lvgl
+                  id: radio_list_page
+              - script.execute: radio_fetch_if_needed
+            on_swipe_up:
+              - lvgl.page.show:
+                  lvgl_id: ${id}_lvgl
+                  id: radio_list_page
+              - script.execute: radio_fetch_if_needed
+            widgets:
+              - label:
+                  id: radio_handle_icon
+                  align: CENTER
+                  x: -62
+                  y: 0
+                  text: "\U000F0143"
+                  text_font: mdi_32
+                  text_align: CENTER
+                  text_color: 0x9C9CD9
+              - label:
+                  id: radio_handle_text
+                  align: CENTER
+                  x: 16
+                  y: 0
+                  text: "Stations"
+                  text_color: 0x9C9CD9
+                  text_align: CENTER
+                  text_font: ui_16

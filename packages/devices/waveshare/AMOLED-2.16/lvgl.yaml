@@ -1,0 +1,154 @@
+# How many app packages registered themselves (each app package increments this
+# in its own esphome.on_boot). The main page's swipe-left only opens the Apps
+# page while this is > 0, so a device with no apps never shows an empty screen.
+globals:
+  - id: app_count
+    type: int
+    initial_value: '0'
+
+  # ── UI theme ──────────────────────────────────────────────────────────────
+  # ONE accent colour for the whole device, restored from NVS. Its default,
+  # 0x564DCB, is the colour the main page's weather icon has always used.
+  # Everything accent-coloured attaches one of the `accent_*` styles below
+  # DECLARATIVELY (`styles: [accent_text]`, `indicator: {styles: [accent_fill]}`,
+  # ...), so a colour change is six style writes plus LVGL's own
+  # `lv_obj_report_style_change()` — no per-widget id list anywhere, and the app
+  # packages stay self-contained (they only read this global).
+  - id: accent_color
+    type: uint32_t
+    restore_value: true
+    initial_value: '0x564DCB'
+
+# The palette offered in Settings -> Display. Keep ACCENT_NAMES and ACCENT_HEX in
+# step: the select UI and the "which entry is current" lookup both use them.
+# (Duplicated as a static array inside the two lambdas in apps/waveshare/settings
+# /display.yaml because lambdas cannot share a C array through ESPHome config.)
+
+lvgl:
+  - id: ${id}_lvgl
+    displays:
+      - ${id}_display
+    touchscreens:
+      - ${id}_touchscreen
+    # Theme styles. Initial values are the default accent so a fresh boot looks
+    # exactly like the static design did.
+    style_definitions:
+      - id: accent_text
+        text_color: 0x564DCB
+      - id: accent_fill
+        bg_color: 0x564DCB
+      - id: accent_line
+        line_color: 0x564DCB
+      - id: accent_arc
+        arc_color: 0x564DCB
+      - id: accent_border
+        border_color: 0x564DCB
+      - id: accent_shadow
+        shadow_color: 0x564DCB
+    <<: !include lvgl/top_layer.yaml
+    <<: !include lvgl/pages.yaml
+    on_idle:
+      - timeout: 45s
+        then:
+          - if:
+              condition:
+                - lambda: 'return !id(always_on_display) && !id(va_active);'
+                - light.is_on: ${id}_display_backlight
+              then:
+                - lvgl.page.show:
+                    lvgl_id: ${id}_lvgl
+                    id: main_page
+                - lvgl.widget.hide:
+                    id: topbar
+                - light.turn_off:
+                    id: ${id}_display_backlight
+                    transition_length: 5s
+                - lvgl.pause:
+              else:
+                - lambda: |-
+                    if (id(va_active))
+                      lv_display_trigger_activity(id(${id}_lvgl).get_disp());
+
+script:
+  # Push the stored accent colour into every style and let LVGL repaint all the
+  # widgets that use them. Called on boot (after LVGL has built the pages), on
+  # the main/apps page loads, and whenever the colour is changed in Settings.
+  - id: apply_theme
+    mode: queued
+    then:
+      - lambda: |-
+          const lv_color_t c = lv_color_hex(id(accent_color));
+          lv_style_set_text_color(id(accent_text), c);
+          lv_style_set_bg_color(id(accent_fill), c);
+          lv_style_set_line_color(id(accent_line), c);
+          lv_style_set_arc_color(id(accent_arc), c);
+          lv_style_set_border_color(id(accent_border), c);
+          lv_style_set_shadow_color(id(accent_shadow), c);
+          // Repaint every object that uses one of these styles.
+          lv_obj_report_style_change(id(accent_text));
+          lv_obj_report_style_change(id(accent_fill));
+          lv_obj_report_style_change(id(accent_line));
+          lv_obj_report_style_change(id(accent_arc));
+          lv_obj_report_style_change(id(accent_border));
+          lv_obj_report_style_change(id(accent_shadow));
+          // The wake-word bar carries the accent while the wake word is armed.
+          // It is recoloured through a LOCAL style (see start_wake_word) which
+          // wins over the attached `accent_line` style, so refresh it here too.
+          // While the user has MUTED the wake word the bar must stay RED (that
+          // is the mute indicator set by stop_wake_word) - hence the guard.
+          if (id(status_line) != nullptr && id(wake_word_enabled))
+            lv_obj_set_style_line_color(id(status_line)->obj, c, LV_PART_MAIN);
+          ESP_LOGI("theme", "Accent colour applied: #%06X", (unsigned) id(accent_color));
+
+esphome:
+  on_boot:
+    # LVGL builds the pages during setup(), so apply the stored colour a moment
+    # after boot; the page loads below re-apply it anyway.
+    - priority: -100
+      then:
+        - delay: 1s
+        - script.execute: apply_theme
+
+button:
+  # Diagnostic: reboot from Home Assistant / the API. Used to verify that the
+  # accent colour survives a reboot (the global is NVS-backed and re-applied on
+  # boot), and handy on its own.
+  - platform: restart
+    name: "Test Restart"
+    id: ${id}_test_restart_btn
+    entity_category: diagnostic
+
+text_sensor:
+  # Live theme readback (verification aid): every device-level widget that must
+  # follow the accent, plus the boot spinner's look — the radio list spinner is
+  # required to match that look at a smaller size.
+  - platform: template
+    name: "Theme Dump"
+    id: ${id}_theme_dump
+    icon: mdi:palette
+    entity_category: diagnostic
+    update_interval: 5s
+    lambda: |-
+      auto hexc = [](lv_color_t c) {
+        unsigned v = ((unsigned) c.red << 16) | ((unsigned) c.green << 8) | (unsigned) c.blue;
+        char b[8];
+        snprintf(b, sizeof(b), "%06X", v);
+        return std::string(b);
+      };
+      std::string s = "accent=";
+      {
+        char b[8];
+        snprintf(b, sizeof(b), "%06X", (unsigned) id(accent_color));
+        s += b;
+      }
+      if (id(weather_icon) == nullptr) return {std::string("ui-not-built")};
+      s += " weather=" + hexc(lv_obj_get_style_text_color(id(weather_icon), LV_PART_MAIN));
+      s += " wakebar=" + hexc(lv_obj_get_style_line_color(id(status_line)->obj, LV_PART_MAIN));
+      s += " vol_ind=" + hexc(lv_obj_get_style_bg_color(id(volume_slider), LV_PART_INDICATOR));
+      s += " vol_knob=" + hexc(lv_obj_get_style_border_color(id(volume_slider), LV_PART_KNOB));
+      lv_obj_t *bs = id(loading_lage_spinner);
+      s += " bootspin=" + std::to_string((int) lv_obj_get_width(bs)) + "x" + std::to_string((int) lv_obj_get_height(bs));
+      s += " bootspin_arc=" + hexc(lv_obj_get_style_arc_color(bs, LV_PART_MAIN));
+      s += " bootspin_ind=" + hexc(lv_obj_get_style_arc_color(bs, LV_PART_INDICATOR));
+      s += " bootspin_aw=" + std::to_string((int) lv_obj_get_style_arc_width(bs, LV_PART_INDICATOR));
+      return {s};

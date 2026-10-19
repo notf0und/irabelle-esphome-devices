@@ -1,0 +1,40 @@
+# GL-S10 Bluetooth proxy
+#
+# Install from the irabelle-esphome-devices repository:
+# https://github.com/notf0und/irabelle-esphome-devices
+substitutions:
+  # --- set these ------------------------------------------------------------
+  name: gl-s10-bt-proxy
+  friendly_name: GL-S10 Bluetooth Proxy
+  # -------------------------------------------------------------------------
+  id: gl_s10
+  name_add_mac_suffix: false
+
+esphome:
+  min_version: 2026.8.0
+
+packages:
+  base: !include
+    file: ../../packages/common/wireless-base.yaml
+  gl-s10: !include
+    file: ../../packages/devices/gl-s10.yaml
+  # residual_bin: !include
+  #   file: packages/bc04p.yaml
+  #   vars:
+  #     id: residual_bin
+  #     mac: DD:34:02:0B:1C:3F
+  #     uuid1: 1b6295d5-4f74-4c58-a2d8-cd83ca26bdf4
+  #     uuid2: 1b6295d5-4f74-4c58-a2d8-cd83ca26bdf5
+  #     name: Residual Bin
+
+esp32_ble_tracker:
+  scan_parameters:
+    # interval: 1100ms
+    # window: 1100ms
+    active: True
+
+bluetooth_proxy:
+  active: True
+
+wifi:
+  enable_on_boot: True

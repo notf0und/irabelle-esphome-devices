@@ -1,0 +1,19 @@
+# Waveshare ESP32-S3-Touch-AMOLED-2.16
+#
+# Copy this file into your ESPHome config directory (for the Home Assistant
+# add-on / Docker image that is /config), change the substitutions, install.
+# First flash needs USB once: see docs/waveshare-amoled-216.md
+
+substitutions:
+  name: waveshare-amoled-216                 # hostname, must be unique
+  friendly_name: Waveshare AMOLED 2.16       # device name in Home Assistant
+  friendly_name_slug: waveshare_amoled_2_16  # entity_id prefix (match friendly_name)
+
+packages:
+  # @main = track this repository. Pin a tag, e.g. @v1.0.0, for a fixed build.
+  device: github://notf0und/irabelle-esphome-devices/devices/waveshare-amoled-216/waveshare-amoled-216.yaml@main
+
+  # Optional: expose the AEC/AFE tuning knobs and audio diagnostics as HA
+  # entities (30 entities, hidden by default - the device runs with the same
+  # tuned defaults either way).
+  # advanced_audio: github://notf0und/irabelle-esphome-devices/devices/waveshare-amoled-216/advanced-audio.yaml@main

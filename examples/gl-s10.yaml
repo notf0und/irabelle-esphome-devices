@@ -1,0 +1,15 @@
+# GL-S10 Bluetooth proxy
+#
+# Copy this file into your ESPHome config directory, change the substitutions,
+# install. First flash needs UART once: see docs/gl-s10.md
+
+substitutions:
+  name: gl-s10-bt-proxy
+  friendly_name: GL-S10 Bluetooth Proxy
+  friendly_name_slug: gl_s10_bt_proxy   # informational (BLE proxies expose few entities)
+
+packages:
+  device: github://notf0und/irabelle-esphome-devices/devices/gl-s10/gl-s10-bt-proxy.yaml@main
+
+# The GL-S10 sits in a plastic case; the LED lights are named
+# "Power LED", "Bluetooth LED" and "Network LED" once added to Home Assistant.

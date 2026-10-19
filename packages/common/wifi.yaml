@@ -1,0 +1,53 @@
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+sensor:
+  - platform: wifi_signal # Reports the WiFi signal strength/RSSI in dB
+    name: Signal dB
+    id: ${id}_wifi_signal_db
+    update_interval: 60s
+    entity_category: "diagnostic"
+    icon: mdi:wifi
+
+  - platform: copy # Reports the WiFi signal strength in %
+    source_id: ${id}_wifi_signal_db
+    name: Signal Percent
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+    unit_of_measurement: "%"
+    entity_category: "diagnostic"
+    device_class: ""
+    icon: mdi:wifi
+
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: IP
+      icon: mdi:wifi
+      # address_0:
+      #   name: ESP IP Address 0
+      # address_1:
+      #   name: ESP IP Address 1
+      # address_2:
+      #   name: ESP IP Address 2
+      # address_3:
+      #   name: ESP IP Address 3
+      # address_4:
+      #   name: ESP IP Address 4
+    ssid:
+      name: SSID
+      icon: mdi:wifi
+    bssid:
+      name: BSSID
+      icon: mdi:wifi
+    mac_address:
+      name: MAC
+      icon: mdi:wifi
+    scan_results:
+      name: Scan Results
+      icon: mdi:wifi
+    dns_address:
+      name: DNS
+      icon: mdi:wifi

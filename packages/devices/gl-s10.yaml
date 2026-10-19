@@ -1,0 +1,163 @@
+# Instructions on opening and wiring for flashing on https://blakadder.com/gl-s10
+# Most of this setup comes from https://github.com/blakadder/bluetooth-proxies/blob/main/gl-s10_v2.yaml
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: ${name_add_mac_suffix}
+  project:
+    name: gl-s10.bluetooth-proxy
+    version: "2.1"
+  on_boot:
+    then:
+      - light.turn_on: power_light
+      - light.turn_on: bluetooth_light
+      - light.turn_on:
+          id: network_light
+          effect: blink_fast
+
+esp32:
+  board: esp32doit-devkit-v1
+  framework:
+    type: esp-idf
+
+
+# Configuration fo V2.3 hardware revision
+# ethernet:
+#   type: IP101
+#   mdc_pin: GPIO23
+#   mdio_pin: GPIO18
+#   clk_mode: GPIO0_IN
+#   phy_addr: 1
+#   power_pin: GPIO5
+
+esp32_ble_tracker:
+  on_ble_advertise:
+      then:
+        - output.turn_on: bluetooth_led
+        - delay: 0.5s
+        - output.turn_off: bluetooth_led
+
+button:
+  - platform: safe_mode
+    name: Safe Mode Boot
+    entity_category: diagnostic
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO33
+      inverted: true
+    name: "Reset Button"
+    entity_category: diagnostic
+
+output:
+  - platform: gpio
+    id: power_led
+    pin: GPIO14
+    inverted: true
+
+  - platform: gpio
+    id: bluetooth_led
+    pin: GPIO12
+    inverted: true
+
+  - platform: gpio
+    id: network_led
+    pin: GPIO032
+    inverted: true
+
+# since these pins are broken out inside and labeled as I2C pins they're configured here
+i2c:
+  sda: 15
+  scl: 13
+  scan: true
+
+light:
+  - platform: binary
+    id: power_light
+    name: Power LED
+    output: power_led
+    effects:
+      - strobe:
+          name: "blink_slow"
+          colors:
+            - state: true
+              duration: 500ms
+            - state: false
+              duration: 500ms
+      - strobe:
+          name: "blink_fast"
+          colors:
+            - state: true
+              duration: 200ms
+            - state: false
+              duration: 200ms
+
+  - platform: binary
+    id: bluetooth_light
+    name: Bluetooth LED
+    output: bluetooth_led
+    effects:
+      - strobe:
+          name: "blink_slow"
+          colors:
+            - state: true
+              duration: 500ms
+            - state: false
+              duration: 500ms
+      - strobe:
+          name: "blink_fast"
+          colors:
+            - state: true
+              duration: 200ms
+            - state: false
+              duration: 200ms
+              
+  - platform: binary
+    id: network_light
+    name: Network LED
+    output: network_led
+    effects:
+      - strobe:
+          name: "blink_slow"
+          colors:
+            - state: true
+              duration: 500ms
+            - state: false
+              duration: 500ms
+      - strobe:
+          name: "blink_fast"
+          colors:
+            - state: true
+              duration: 200ms
+            - state: false
+              duration: 200ms
+
+wifi:
+  on_connect: 
+    then: 
+      - light.turn_on:
+          id: network_light
+          effect: blink_slow
+
+  on_disconnect: 
+    then: 
+      light.turn_off: network_light
+
+api:
+  on_client_connected:
+    - if:
+        condition:
+          lambda: 'return (0 == client_info.find("Home Assistant "));' 
+        then:
+          - light.turn_on:
+              id: network_light
+              effect: none
+  on_client_disconnected:
+    - if:
+        condition:
+          lambda: 'return (0 == client_info.find("Home Assistant "));' 
+        then:
+          - light.turn_on:
+              id: network_light
+              effect: blink_slow

@@ -1,0 +1,251 @@
+# lvgl:
+#   pages:
+      id: canvas_6
+      bg_color: 0x000000
+      pad_all: 0
+      scrollbar_mode: "OFF"
+      widgets:
+        - obj:
+            id: battery_page_container
+            x: 64
+            y: 60
+            width: 352
+            height: 360
+            bg_color: 0x000000
+            bg_opa: 0%
+            border_opa: 0%
+            outline_opa: 0%
+            pad_all: 0
+            scrollbar_mode: "OFF"
+            widgets:
+              - label:
+                  id: pmu_status_label
+                  x: 0
+                  y: 0
+                  width: 350
+                  height: 32
+                  text: "PMU Status"
+                  text_color: 0xFFFFFF
+                  text_align: LEFT
+                  text_font: montserrat_28
+              - label:
+                  id: battery_status_label
+                  x: 1
+                  y: 92
+                  width: 350
+                  height: 32
+                  text: "Battery Status"
+                  text_color: 0xFFFFFF
+                  text_align: LEFT
+                  text_font: montserrat_28
+              - label:
+                  id: power_status_label
+                  x: 0
+                  y: 226
+                  width: 350
+                  height: 32
+                  text: "Power Status"
+                  text_color: 0xFFFFFF
+                  text_align: LEFT
+                  text_font: montserrat_28
+              - obj:
+                  id: temperature_container
+                  x: 0
+                  y: 40
+                  width: 352
+                  height: 48
+                  bg_color: 0x6D6D6D
+                  border_width: 0
+                  border_color: 0x4B5563
+                  radius: 8
+                  pad_right: 0
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    - label:
+                        id: temperature_label
+                        x: 16
+                        y: 0
+                        width: 221
+                        height: 30
+                        align: LEFT_MID
+                        text: "Temp: 0 °C"
+                        text_color: 0xFFFFFF
+                        bg_opa: 0%
+                        text_align: LEFT
+                        text_font: montserrat_28
+              - obj:
+                  id: battery_percentage_container
+                  x: 0
+                  y: 132
+                  width: 350
+                  height: 40
+                  bg_color: 0x6D6D6D
+                  border_width: 1
+                  border_color: 0x4B5563
+                  radius: 8
+                  pad_right: 0
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    - label:
+                        id: battery_percentage_label
+                        x: 16
+                        y: 0
+                        width: 324
+                        height: 30
+                        align: LEFT_MID
+                        text: "Battery: 0%"
+                        text_color: 0xFFFFFF
+                        text_font: montserrat_24
+              - obj:
+                  id: battery_voltage_container
+                  x: 0
+                  y: 174
+                  width: 350
+                  height: 40
+                  bg_color: 0x6D6D6D
+                  border_width: 1
+                  border_color: 0x4B5563
+                  radius: 8
+                  pad_right: 0
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    - label:
+                        id: battery_voltage_label
+                        x: 16
+                        y: 0
+                        width: 324
+                        height: 30
+                        align: LEFT_MID
+                        text: "Battery Voltage: 0mV"
+                        text_color: 0xFFFFFF
+                        text_font: montserrat_24
+              - obj:
+                  id: charge_state_container
+                  x: 1
+                  y: 266
+                  width: 350
+                  height: 40
+                  bg_color: 0x6D6D6D
+                  border_width: 1
+                  border_color: 0x4B5563
+                  radius: 8
+                  pad_right: 0
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    - label:
+                        id: charge_state_label
+                        x: 16
+                        y: 0
+                        width: 324
+                        height: 30
+                        align: LEFT_MID
+                        text: "Charge State: 0"
+                        text_color: 0xFFFFFF
+                        text_font: montserrat_24
+              - obj:
+                  id: charge_container
+                  x: 0
+                  y: 308
+                  width: 350
+                  height: 40
+                  bg_color: 0x6D6D6D
+                  border_width: 1
+                  border_color: 0x4B5563
+                  radius: 8
+                  pad_right: 0
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    - label:
+                        id: charge_label
+                        x: 16
+                        y: 0
+                        width: 324
+                        height: 30
+                        align: LEFT_MID
+                        text: "Charge: No"
+                        text_color: 0xFFFFFF
+                        text_font: montserrat_24
+              - obj:
+                  id: vbus_in_container
+                  x: 0
+                  y: 350
+                  width: 350
+                  height: 40
+                  bg_color: 0x6D6D6D
+                  border_width: 1
+                  border_color: 0x4B5563
+                  radius: 8
+                  pad_right: 0
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    - label:
+                        id: vbus_in_label
+                        x: 16
+                        y: 0
+                        width: 324
+                        height: 30
+                        align: LEFT_MID
+                        text: "VBUS In: No"
+                        text_color: 0xFFFFFF
+                        text_font: montserrat_24
+              - obj:
+                  id: vbus_voltage_container
+                  x: 0
+                  y: 392
+                  width: 350
+                  height: 40
+                  bg_color: 0x6D6D6D
+                  border_width: 1
+                  border_color: 0x4B5563
+                  radius: 8
+                  pad_right: 0
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    - label:
+                        id: vbus_voltage_label
+                        x: 16
+                        y: 0
+                        width: 324
+                        height: 30
+                        align: LEFT_MID
+                        text: "VBUS Voltage: 0mV"
+                        text_color: 0xFFFFFF
+                        text_font: montserrat_24
+              - obj:
+                  id: sys_voltage_container
+                  x: 0
+                  y: 434
+                  width: 350
+                  height: 40
+                  bg_color: 0x6D6D6D
+                  border_width: 1
+                  border_color: 0x4B5563
+                  radius: 8
+                  pad_right: 0
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    - label:
+                        id: sys_voltage_label
+                        x: 16
+                        y: 0
+                        width: 324
+                        height: 30
+                        align: LEFT_MID
+                        text: "System Voltage: 0mV"
+                        text_color: 0xFFFFFF
+                        text_font: montserrat_24
+
+        - label:
+            id: battery_page_back_button
+            on_release:
+              - lvgl.page.show:
+                  lvgl_id: ${id}_lvgl
+                  id: settings_page
+            x: 12
+            y: 56
+            width: 48
+            height: 48
+            text: "\uF053"
+            text_font: montserrat_42
+            text_align: CENTER
+            text_color: 0xFFFFFF

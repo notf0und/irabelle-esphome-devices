@@ -1,0 +1,860 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Radio app — self-contained package.
+#
+# Add it to a device with:
+#   packages:
+#     radio_app: !include
+#       file: apps/lvgl/radio.yaml
+#
+# It contributes: the ui_* text fonts (Latin+Cyrillic+Greek), the sh_radio
+# component + its scripts/entities, the hero + station-list LVGL pages and the
+# "Radio" tile on the Apps page. Removing the package removes the whole app and
+# its tile; the Apps page disappears too when no app is included (the main
+# page's swipe-left is gated on app_count, which every app package increments).
+#
+# Playback is delegated to Home Assistant for every station (see radio_play_via_ha);
+# the device itself only ever decodes the FLAC 48 kHz HA's ffmpeg proxy sends.
+# ─────────────────────────────────────────────────────────────────────────────
+
+substitutions:
+  # This device's own media_player entity in Home Assistant. EVERY station is
+  # played through it: the device asks HA to play the station and HA's ffmpeg
+  # proxy transcodes any source to FLAC 48 kHz (see radio_play_via_ha).
+  ha_media_player_entity: media_player.${friendly_name_slug}_media_player
+
+font:
+  # ── UI text fonts: Latin + Cyrillic + Greek coverage ──────────────────────
+  # The `montserrat_NN` ids the radio pages used are LVGL's *built-in* Montserrat
+  # fonts, which carry ASCII only — hence "España"/"Málaga" rendered as .notdef
+  # boxes. These are the same typeface, compiled by ESPHome from the Google
+  # Fonts TTF with GF_Latin_Core (319 codepoints: Latin-1 Supplement + Latin
+  # Extended-A), GF_Cyrillic_Core (241: Russian/Ukrainian/Bulgarian/Serbian …)
+  # and GF_Greek_Core (197). Combined = 512 codepoints, which finally renders
+  # Russian station names too. Only the four sizes the radio pages actually use
+  # are generated, which keeps the flash cost bounded (~250 kB total).
+  # NOT included: CJK (not in the glyphsets package, and tens of thousands of
+  # glyphs) and Arabic (224 codepoints exist, but LVGL has no bidi/shaping here
+  # so it would render isolated, mis-ordered glyphs — worse than boxes).
+  - file: "gfonts://Montserrat"
+    id: ui_16
+    size: 16
+    bpp: 4
+    glyphsets: [GF_Latin_Core, GF_Cyrillic_Core, GF_Greek_Core]
+  - file: "gfonts://Montserrat"
+    id: ui_24
+    size: 24
+    bpp: 4
+    glyphsets: [GF_Latin_Core, GF_Cyrillic_Core, GF_Greek_Core]
+  - file: "gfonts://Montserrat"
+    id: ui_28
+    size: 28
+    bpp: 4
+    glyphsets: [GF_Latin_Core, GF_Cyrillic_Core, GF_Greek_Core]
+  - file: "gfonts://Montserrat"
+    id: ui_32
+    size: 32
+    bpp: 4
+    glyphsets: [GF_Latin_Core, GF_Cyrillic_Core, GF_Greek_Core]
+
+sh_radio:
+  id: radio
+  media_player: ${id}_media_player
+  # One server batch = the resident window: 20 rows = 4 pages, fetched by
+  # page-aligned `offset`. The previous/next pages are preloaded in the
+  # background so a pager tap is instant.
+  max_results: 20
+  on_updated:
+    - script.execute: radio_refresh
+  on_ha_play:
+    - script.execute: radio_play_via_ha
+  # Pull the previous/next page in the background (single-flight, throttled).
+  on_prefetch:
+    - script.execute: radio_fetch
+
+script:
+  - id: radio_refresh
+    mode: restart
+    then:
+      - lambda: |-
+          // Widgets do not exist until LVGL has built the pages; the media
+          // player publishes state during setup, so bail out until then.
+          auto *r = id(radio);
+          auto set_text = [](lv_obj_t *l, const char *s) {
+            if (l == nullptr) return;
+            const char *cur = lv_label_get_text(l);
+            if (cur == nullptr || strcmp(cur, s) != 0) lv_label_set_text(l, s);
+          };
+
+          // ── hero page ───────────────────────────────────────────────────
+          if (id(radio_now) != nullptr) {
+            set_text(id(radio_now), r->now_playing().c_str());
+            std::string sub = r->now_sub();
+            sub += "   |   ";
+            sub += r->player_state();
+            set_text(id(radio_sub), sub.c_str());
+            set_text(id(radio_status), r->status().c_str());
+            set_text(id(radio_play_icon), r->play_icon());
+            // The hero disc keeps the static MDI radio glyph: the favicon
+            // download was removed (most servers serve ICO/WebP/SVG/JPEG, and
+            // the synchronous download stalled the main loop).
+          }
+
+          // ── station list page ───────────────────────────────────────────
+          if (id(rl_row0) == nullptr) return;
+          set_text(id(rl_title), r->list_title().c_str());
+          set_text(id(rl_status), r->status().c_str());
+          set_text(id(rl_page_label), r->page_label().c_str());
+
+          lv_obj_t *rows[5]     = {id(rl_row0),          id(rl_row1),          id(rl_row2),          id(rl_row3),          id(rl_row4)};
+          lv_obj_t *names[5]    = {id(rl_row0_name),     id(rl_row1_name),     id(rl_row2_name),     id(rl_row3_name),     id(rl_row4_name)};
+          lv_obj_t *flags[5]    = {id(rl_row0_flag),     id(rl_row1_flag),     id(rl_row2_flag),     id(rl_row3_flag),     id(rl_row4_flag)};
+          lv_obj_t *starobj[5]  = {id(rl_row0_star),     id(rl_row1_star),     id(rl_row2_star),     id(rl_row3_star),     id(rl_row4_star)};
+          lv_obj_t *starico[5]  = {id(rl_row0_star_ico), id(rl_row1_star_ico), id(rl_row2_star_ico), id(rl_row3_star_ico), id(rl_row4_star_ico)};
+
+          const bool want_stars = r->row_star_visible();
+          for (int i = 0; i < 5; i++) {
+            // row_index() maps a 0..4 row SLOT to an absolute list index; the
+            // row_* accessors take the slot again (they re-apply the page
+            // stride). Passing the absolute index here double-applied the page
+            // offset, so pages 2+ skipped rows and pages past the halfway point
+            // read out of range and rendered empty.
+            if (r->row_index(i) < 0) {  // row past the end of the list: hide, do not repaint
+              if (!lv_obj_has_flag(rows[i], LV_OBJ_FLAG_HIDDEN)) {
+                lv_obj_add_flag(rows[i], LV_OBJ_FLAG_HIDDEN);
+              }
+              continue;
+            }
+            if (lv_obj_has_flag(rows[i], LV_OBJ_FLAG_HIDDEN)) {
+              lv_obj_remove_flag(rows[i], LV_OBJ_FLAG_HIDDEN);
+            }
+            set_text(names[i], r->row_name(i).c_str());
+            // The sub line (country | bitrate) was removed from the row: the
+            // freed vertical space keeps the name box taller than the font line
+            // height so SCROLL can never animate vertically (bounce).
+
+            const std::string flag = r->row_flag(i);
+            if (flag.empty()) {
+              if (!lv_obj_has_flag(flags[i], LV_OBJ_FLAG_HIDDEN))
+                lv_obj_add_flag(flags[i], LV_OBJ_FLAG_HIDDEN);
+            } else {
+              if (lv_obj_has_flag(flags[i], LV_OBJ_FLAG_HIDDEN))
+                lv_obj_remove_flag(flags[i], LV_OBJ_FLAG_HIDDEN);
+              set_text(flags[i], flag.c_str());
+            }
+
+            if (want_stars) {
+              if (lv_obj_has_flag(starobj[i], LV_OBJ_FLAG_HIDDEN))
+                lv_obj_remove_flag(starobj[i], LV_OBJ_FLAG_HIDDEN);
+              set_text(starico[i], r->row_star(i).c_str());
+            } else if (!lv_obj_has_flag(starobj[i], LV_OBJ_FLAG_HIDDEN)) {
+              lv_obj_add_flag(starobj[i], LV_OBJ_FLAG_HIDDEN);
+            }
+          }
+
+          // The "All countries" breadcrumb was removed: the Country/Category/
+          // Language tab you are already on goes back to its picker.
+
+          // Loading spinner: visible exactly while the page has no rows to draw
+          // and a request is in flight (or about to be). Rows that are not
+          // resident are hidden by the loop above, so without this the row area
+          // is five blank cards.
+          if (id(rl_spinner) != nullptr) {
+            if (r->list_loading()) {
+              if (lv_obj_has_flag(id(rl_spinner), LV_OBJ_FLAG_HIDDEN))
+                lv_obj_remove_flag(id(rl_spinner), LV_OBJ_FLAG_HIDDEN);
+            } else if (!lv_obj_has_flag(id(rl_spinner), LV_OBJ_FLAG_HIDDEN)) {
+              lv_obj_add_flag(id(rl_spinner), LV_OBJ_FLAG_HIDDEN);
+            }
+          }
+
+          // Error banner: a failed request must show a MESSAGE, never a spinner
+          // that never ends. Visible only while the page still has no rows, so
+          // a stale page that is still on screen is not covered by an error.
+          if (id(rl_error) != nullptr) {
+            const bool err = r->list_error();
+            if (err) set_text(id(rl_error), r->status().c_str());
+            lv_obj_t *eb[2] = {id(rl_error), id(rl_error_hint)};
+            for (int e = 0; e < 2; e++) {
+              if (eb[e] == nullptr) continue;
+              if (err) {
+                if (lv_obj_has_flag(eb[e], LV_OBJ_FLAG_HIDDEN))
+                  lv_obj_remove_flag(eb[e], LV_OBJ_FLAG_HIDDEN);
+              } else if (!lv_obj_has_flag(eb[e], LV_OBJ_FLAG_HIDDEN)) {
+                lv_obj_add_flag(eb[e], LV_OBJ_FLAG_HIDDEN);
+              }
+            }
+          }
+
+          // Tab highlight: a style write invalidates the widget, so only do it
+          // when the selection actually moved.
+          static int last_tab = -1;
+          const int tab = r->active_tab();
+          if (tab != last_tab) {
+            last_tab = tab;
+            lv_obj_t *tabs[5]  = {id(rl_tab0),  id(rl_tab1),  id(rl_tab2),  id(rl_tab3),  id(rl_tab4)};
+            lv_obj_t *tlab[5]  = {id(rl_tab0_label), id(rl_tab1_label), id(rl_tab2_label), id(rl_tab3_label), id(rl_tab4_label)};
+            for (int t = 0; t < 5; t++) {
+              const bool on = (t == tab);
+              // The active tab uses the theme accent (the global, not a
+              // hardcoded colour), so changing it in Settings -> Display moves
+              // the tab highlight too.
+              lv_obj_set_style_bg_color(tabs[t], lv_color_hex(on ? id(accent_color) : 0x1B2138), LV_PART_MAIN);
+              if (t != 4)
+                lv_obj_set_style_text_color(tlab[t], lv_color_hex(on ? 0xFFFFFF : 0x9C9CD9), LV_PART_MAIN);
+            }
+          }
+
+
+  # Cheap state-only repaint. Called from the media player's on_state, which
+  # also fires for every volume change, so this must never touch the rows.
+  - id: radio_status_update
+    mode: restart
+    then:
+      - lambda: |-
+          auto *r = id(radio);
+          auto set_text = [](lv_obj_t *l, const char *s) {
+            if (l == nullptr) return;
+            const char *cur = lv_label_get_text(l);
+            if (cur == nullptr || strcmp(cur, s) != 0) lv_label_set_text(l, s);
+          };
+          if (id(radio_status) == nullptr) return;
+          set_text(id(radio_status), r->status().c_str());
+          set_text(id(radio_play_icon), r->play_icon());
+          std::string sub = r->now_sub();
+          sub += "   |   ";
+          sub += r->player_state();
+          set_text(id(radio_sub), sub.c_str());
+
+  # Fetch the current view (tab/picker selection) from radio-browser.info.
+  # `queued` with max_runs 2 = at most ONE request in flight plus one pending:
+  # mashing the tabs used to fire one TLS handshake per tap, which is what
+  # exhausted the heap/sockets and froze the device. The queued instance
+  # rebuilds its URL when it runs, so a burst converges on the last selection.
+  - id: radio_fetch
+    mode: restart
+    then:
+      # 250 ms trailing-edge debounce: mashing the tabs restarts this script and
+      # therefore collapses into ONE request instead of one TLS handshake per
+      # tap (that burst is what used to exhaust the heap and freeze the device).
+      - delay: 250ms
+      # Blocking GET + parse, body buffered in PSRAM inside sh_radio. sh_radio
+      # retries a failed attempt once internally (a fresh TLS handshake
+      # occasionally fails while a stream is playing and the heap is tight), so
+      # the paging cursor stays consistent across the retry. Errors are reported
+      # through the status label instead of taking the device down.
+      - lambda: 'id(radio).fetch_now();'
+
+  # Ask Home Assistant to play the current station for us. This is the ONLY
+  # playback path now: sh_radio fires on_ha_play for every station.
+  #
+  # Home Assistant's ESPHome integration replaces the URL with its own
+  # /api/esphome/ffmpeg_proxy/... URL (available because this player advertises a
+  # FLAC media pipeline) and runs ffmpeg to convert whatever the source uses
+  # (MP3/AAC/AAC+/HLS/Ogg) to FLAC 48 kHz, so the device only ever decodes FLAC.
+  # Requires the ESPHome integration option "Allow the device to make Home
+  # Assistant service calls" (options.allow_service_calls = true) for this device.
+  - id: radio_play_via_ha
+    mode: restart
+    then:
+      - if:
+          condition:
+            - lambda: 'return id(${id}_api).is_connected();'
+          then:
+            - homeassistant.action:
+                action: media_player.play_media
+                data:
+                  entity_id: ${ha_media_player_entity}
+                  media_content_id: !lambda 'return id(radio).now_url();'
+                  media_content_type: music
+          else:
+            # No HA connection: report it and leave the station selected. There
+            # is no on-device fallback any more (by design).
+            - lambda: 'id(radio).set_status("Home Assistant offline");'
+
+  # Lazy load: only hits the network when the current view has no data yet.
+  - id: radio_fetch_if_needed
+    mode: restart
+    then:
+      - lambda: 'if (id(radio).needs_fetch()) id(radio_fetch)->execute();'
+
+  # Diagnostic sweep used to prove the "rapid multi-tap" lock-up is gone: six
+  # row taps 120 ms apart. sh_radio debounces the burst down to one stream
+  # switch, and each tap only repaints the labels that changed.
+  - id: radio_rapid_tap_test
+    then:
+      - lambda: 'ESP_LOGI("sh_radio_test", "Rapid tap test: view=%s rows=%d", id(radio).list_title().c_str(), id(radio).list_size());'
+      - lambda: 'id(radio).play_row(0);'
+      - delay: 120ms
+      - lambda: 'id(radio).play_row(1);'
+      - delay: 120ms
+      - lambda: 'id(radio).play_row(0);'
+      - delay: 120ms
+      - lambda: 'id(radio).play_row(2);'
+      - delay: 120ms
+      - lambda: 'id(radio).play_row(3);'
+      - delay: 120ms
+      - lambda: 'id(radio).play_row(1);'
+      - delay: 300ms
+      - lambda: 'ESP_LOGI("sh_radio_test", "Rapid tap test: done, state=%s status=%s", id(radio).player_state().c_str(), id(radio).status().c_str());'
+
+  # Plays 4 s of a 1 kHz square wave straight to the I2S speaker (bypassing the
+  # mixer/volume pipeline). Used to measure the echo path: play this, then compare
+  # "Mic Ch0..3 RMS" — the channel that rises is the one carrying the playback,
+  # i.e. the hardware AEC reference (expected: Ch1 / MIC3).
+
+text_sensor:
+  # What the radio list page should be showing right now (model readout).
+  - platform: template
+    name: "Radio View"
+    id: ${id}_radio_view
+    icon: mdi:format-list-bulleted
+    entity_category: diagnostic
+    update_interval: 8s
+    lambda: |-
+      return {id(radio).view_report()};
+
+  # NVS-backed radio favourites, readable from the API (survives reboot).
+  - platform: template
+    name: "Radio Favourites"
+    id: ${id}_radio_favourites
+    icon: mdi:star
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      return {id(radio).favourites_summary()};
+
+  # Geometry readback for the hero layout (request 5) and the Radio tile
+  # (request 3). Reads the LIVE LVGL widget tree, so it proves - independently of
+  # any screenshot - that the circular container is gone, that the hero glyph is
+  # a smaller font (line height 64, was 128), that the title/description moved up
+  # and the description is a size larger (ui_24), that the transport row still
+  # fits on the 480x480 screen without overlapping, and that the app tile has no
+  # background/border/radius but is still clickable across its whole area.
+  - platform: template
+    name: "Radio UI Geometry"
+    id: ${id}_radio_ui_geometry
+    icon: mdi:vector-rectangle
+    entity_category: diagnostic
+    update_interval: 5s
+    lambda: |-
+      if (id(radio_disc_icon) == nullptr) return {std::string("ui-not-built")};
+      auto box = [](lv_obj_t *o) {
+        return std::to_string((int) lv_obj_get_x(o)) + "," + std::to_string((int) lv_obj_get_y(o)) + " " +
+               std::to_string((int) lv_obj_get_width(o)) + "x" + std::to_string((int) lv_obj_get_height(o));
+      };
+      auto flh = [](lv_obj_t *o) {
+        return std::to_string((int) lv_font_get_line_height(lv_obj_get_style_text_font(o, LV_PART_MAIN)));
+      };
+      std::string s = "glyph=" + box(id(radio_disc_icon)) + " fh=" + flh(id(radio_disc_icon));
+      s += " title=" + box(id(radio_now)) + " fh=" + flh(id(radio_now));
+      s += " desc=" + box(id(radio_sub)) + " fh=" + flh(id(radio_sub));
+      s += " prev=" + box(id(radio_prev)) + " play=" + box(id(radio_playpause)) + " next=" + box(id(radio_next));
+      s += " handle=" + box(id(radio_handle));
+      lv_obj_t *t = id(app_tile_radio);
+      s += " tile=" + box(t) + " bgopa=" +
+           std::to_string((int) ((lv_obj_get_style_bg_opa(t, LV_PART_MAIN) * 100) / 255)) + "%";
+      s += " border=" + std::to_string((int) lv_obj_get_style_border_width(t, LV_PART_MAIN));
+      s += " radius=" + std::to_string((int) lv_obj_get_style_radius(t, LV_PART_MAIN));
+      s += " click=" + std::string(lv_obj_has_flag(t, LV_OBJ_FLAG_CLICKABLE) ? "1" : "0");
+      s += " ticon_fh=" + flh(id(app_radio_icon)) + " tname=" + std::string(lv_label_get_text(id(app_radio_name)));
+      // Loading spinner: MUST match the boot spinner's look (120 deg arc, 1 s
+      // per turn, grey track) at a smaller size, with the indicator in the
+      // theme accent. `arc=`/`ind=` read the live style colours, `tile_icon=`
+      // is the theme-coloured app icon on the Apps screen.
+      auto hexc = [](lv_color_t c) {
+        unsigned v = ((unsigned) c.red << 16) | ((unsigned) c.green << 8) | (unsigned) c.blue;
+        char b[8];
+        snprintf(b, sizeof(b), "%06X", v);
+        return std::string(b);
+      };
+      lv_obj_t *sp = id(rl_spinner);
+      // A hidden object is never laid out, so lv_obj_get_width() is 0: read the
+      // STYLE size instead (the spinner is hidden until a page loads).
+      s += " spin_box=" + std::to_string((int) lv_obj_get_style_width(sp, LV_PART_MAIN)) + "x" +
+           std::to_string((int) lv_obj_get_style_height(sp, LV_PART_MAIN)) + " spin_arc=" + hexc(lv_obj_get_style_arc_color(sp, LV_PART_MAIN));
+      s += " spin_ind=" + hexc(lv_obj_get_style_arc_color(sp, LV_PART_INDICATOR));
+      s += " spin_aw=" + std::to_string((int) lv_obj_get_style_arc_width(sp, LV_PART_INDICATOR));
+      s += " tile_icon=" + hexc(lv_obj_get_style_text_color(id(app_radio_icon), LV_PART_MAIN));
+      s += " play_fill=" + hexc(lv_obj_get_style_bg_color(id(radio_playpause), LV_PART_MAIN));
+      s += " glyph_col=" + hexc(lv_obj_get_style_text_color(id(radio_disc_icon), LV_PART_MAIN));
+      if (s.size() > 420) s.resize(420);
+      return {s};
+
+  # What is actually RENDERED on the radio list page (reads the LVGL labels back,
+  # not the model), with each row's absolute index. Empty rows report <hidden>,
+  # so page-walking over the API can prove no data row renders blank.
+  - platform: template
+    name: "Radio Page Dump"
+    id: ${id}_radio_page_dump
+    icon: mdi:format-list-checks
+    entity_category: diagnostic
+    update_interval: 1s
+    lambda: |-
+      if (id(rl_row0) == nullptr) return {std::string("page-not-built")};
+      lv_obj_t *rows[5]  = {id(rl_row0),      id(rl_row1),      id(rl_row2),      id(rl_row3),      id(rl_row4)};
+      lv_obj_t *names[5] = {id(rl_row0_name), id(rl_row1_name), id(rl_row2_name), id(rl_row3_name), id(rl_row4_name)};
+      std::string s = id(radio).list_title();
+      s += " ";
+      s += id(radio).page_label();
+      s += " status=";
+      s += id(radio).status();
+      // Hero model value: lets a test tell "the model changed" apart from
+      // "the LVGL label repainted", which the screenshots alone cannot.
+      s += " hero=";
+      s += id(radio).now_playing().c_str();
+      // Loading spinner state (request 2): 1 = the row area is showing the
+      // spinner because the page has no resident rows yet.
+      s += " spin=";
+      s += (id(rl_spinner) != nullptr && !lv_obj_has_flag(id(rl_spinner), LV_OBJ_FLAG_HIDDEN)) ? "1" : "0";
+      // Error-banner state (request 1): 1 = the row area is showing the error
+      // message because the last request failed and the page has no rows.
+      s += " err=";
+      s += (id(rl_error) != nullptr && !lv_obj_has_flag(id(rl_error), LV_OBJ_FLAG_HIDDEN)) ? "1" : "0";
+      // Row-name box content height vs the font line height. LVGL's SCROLL long
+      // mode animates VERTICALLY when the content box is shorter than the text,
+      // which is what made short (Cyrillic) names bounce. rowh must stay well
+      // above lh.
+      s += " rowh=";
+      s += std::to_string((int) lv_obj_get_content_height(id(rl_row0_name)));
+      s += " lh=";
+      s += std::to_string((int) lv_font_get_line_height(lv_obj_get_style_text_font(id(rl_row0_name), LV_PART_MAIN)));
+      for (int i = 0; i < 5; i++) {
+        const int abs = id(radio).page() * 5 + i;
+        s += " | ";
+        s += std::to_string(abs);
+        s += ":";
+        if (lv_obj_has_flag(rows[i], LV_OBJ_FLAG_HIDDEN)) {
+          s += "<hidden>";
+        } else {
+          const char *t = lv_label_get_text(names[i]);
+          s += (t == nullptr || t[0] == '\0') ? "<blank>" : t;
+        }
+      }
+      if (s.size() > 380) s.resize(380);
+      return {s};
+
+binary_sensor:
+  # ── radio: voice-busy edge detector (request 5) ──────────────────────────
+  # True while the voice assistant is running or its TTS is being announced.
+  # on_press  = rising edge (wake word): remember whether the radio was playing
+  #             so it can be resumed afterwards.
+  # on_release = falling edge (announcement really finished): re-request the
+  #             station from Home Assistant and restore the mixer to full volume.
+  # This lives with the radio app (not in the base voice_assistant block) so the
+  # radio stays self-contained: a bare edge detector plus two sh_radio calls.
+  - platform: template
+    id: radio_voice_busy
+    internal: true
+    lambda: |-
+      return id(${id}_voice_assistant).is_running() || id(radio).player_announcing();
+    on_press:
+      - lambda: 'id(radio).mark_interrupted();'
+    on_release:
+      - lambda: 'id(radio).resume_if_interrupted();'
+
+button:
+  - platform: template
+    name: "Radio Test 1 - France Info"
+    id: ${id}_radio_test_1
+    icon: mdi:radio
+    entity_category: config
+    on_press:
+      - media_player.play_media:
+          id: ${id}_media_player
+          media_url: "http://icecast.radiofrance.fr/franceinfo-midfi.mp3"
+
+  - platform: template
+    name: "Radio Test 2 - BBC World Service"
+    id: ${id}_radio_test_2
+    icon: mdi:radio
+    entity_category: config
+    on_press:
+      - media_player.play_media:
+          id: ${id}_media_player
+          media_url: "http://stream.live.vc.bbcmedia.co.uk/bbc_world_service"
+
+  - platform: template
+    name: "Radio Test 3 - Cadena 100"
+    id: ${id}_radio_test_3
+    icon: mdi:radio
+    entity_category: config
+    on_press:
+      - media_player.play_media:
+          id: ${id}_media_player
+          media_url: "http://cadena100-streamers-mp3.flumotion.com/cope/cadena100.mp3"
+
+  - platform: template
+    name: "Radio Test Stop"
+    id: ${id}_radio_test_stop
+    icon: mdi:stop
+    entity_category: config
+    on_press:
+      - media_player.stop:
+          id: ${id}_media_player
+
+  # Fetches the on-screen radio directory (same action as the Browse/Refresh
+  # chips on the radio page). Handy from HA and for testing without touching
+  # the screen.
+  - platform: template
+    name: "Radio Directory Refresh"
+    id: ${id}_radio_fetch_btn
+    icon: mdi:refresh
+    entity_category: config
+    on_press:
+      - script.execute: radio_fetch
+
+  # ── Radio redesign test controls (diagnostics) ─────────────────────────────
+  # Drive the new radio data layer from Home Assistant / the API, so the
+  # directory modes and the rapid-tap behaviour can be verified without
+  # touching the screen.
+  - platform: template
+    name: "Radio Test Rapid Tap"
+    id: ${id}_radio_rapid_tap_btn
+    icon: mdi:gesture-tap
+    entity_category: diagnostic
+    on_press:
+      - script.execute: radio_rapid_tap_test
+
+  # Exactly what tapping the first row of the on-screen list does (play_row(0)
+  # -> sh_radio debounce -> media_player.set_media_url). Used to reproduce and
+  # then verify the "first station of a country reboots the device" report
+  # without touching the glass.
+  - platform: template
+    name: "Radio Test Play Row 0"
+    id: ${id}_radio_play_row0_btn
+    icon: mdi:play
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          ESP_LOGI("sh_radio_test", "Play row 0: view=%s rows=%d", id(radio).list_title().c_str(),
+                   id(radio).list_size());
+          id(radio).play_row(0);
+
+  # Same for row slot 4, so a specific station on the visible page can be played
+  # from the API (e.g. an MP3 row that only exists in slot 4 of page 2).
+  - platform: template
+    name: "Radio Test Play Row 4"
+    id: ${id}_radio_play_row4_btn
+    icon: mdi:play
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          ESP_LOGI("sh_radio_test", "Play row 4: view=%s rows=%d", id(radio).list_title().c_str(),
+                   id(radio).list_size());
+          id(radio).play_row(4);
+
+  # ── font / accent verification ──────────────────────────────────────────
+  # ── Apps-screen hint: .notdef (missing-glyph square) proof ──────────────
+  # The hint on the Apps screen reads "Tap an app  ·  swipe right for home".
+  # Its middot (U+00B7) is not ASCII, so with the old built-in `montserrat_16`
+  # it rendered as a .notdef box. It now uses `ui_16` (GF_Latin_Core carries
+  # U+00B7). These three buttons put reference strings on the SAME label with
+  # the SAME font, so the framebuffer can compare glyph signatures:
+  #   * "日本語" - CJK is in none of ui_16's glyphsets -> the TRUE .notdef box;
+  #   * "·"      - the middot alone;
+  #   * restore  - puts the real hint text back.
+  - platform: template
+    name: "Test Hint Notdef"
+    id: ${id}_test_hint_notdef_btn
+    icon: mdi:format-letter-case
+    entity_category: diagnostic
+    on_press:
+      - lvgl.page.show:
+          lvgl_id: ${id}_lvgl
+          id: apps_page
+      - lambda: 'lv_label_set_text(id(apps_hint), "日本語");'
+
+  - platform: template
+    name: "Test Hint Middot"
+    id: ${id}_test_hint_middot_btn
+    icon: mdi:format-letter-case
+    entity_category: diagnostic
+    on_press:
+      - lvgl.page.show:
+          lvgl_id: ${id}_lvgl
+          id: apps_page
+      - lambda: 'lv_label_set_text(id(apps_hint), "·");'
+
+  - platform: template
+    name: "Test Hint Restore"
+    id: ${id}_test_hint_restore_btn
+    icon: mdi:restore
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'lv_label_set_text(id(apps_hint), "Tap an app  ·  swipe right for home");'
+  # The radio pages used LVGL's built-in montserrat_* fonts, which are ASCII
+  # only, so "España"/"Málaga" rendered as .notdef boxes. These three buttons
+  # put a fixed 7-glyph string on the hero title (ui_32) without touching
+  # playback, so the screenshot endpoint can prove from the framebuffer that the
+  # accented glyphs have their own ink and are NOT the same box as a codepoint
+  # the font cannot contain.
+  - platform: template
+    name: "Radio Test Font Accents"
+    id: ${id}_radio_font_accents_btn
+    icon: mdi:format-letter-case
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'id(radio).set_hero_name("áéíóúñü");'
+
+  - platform: template
+    name: "Radio Test Font ASCII"
+    id: ${id}_radio_font_ascii_btn
+    icon: mdi:format-letter-case
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'id(radio).set_hero_name("aeiounu");'
+
+  - platform: template
+    name: "Radio Test Font Notdef"
+    id: ${id}_radio_font_notdef_btn
+    icon: mdi:format-letter-case
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'id(radio).set_hero_name("日本語中文漢字");'
+
+  # Cyrillic coverage (request 3): a Russian station name must render as real
+  # glyphs, not .notdef boxes. Compare its ink against the .notdef string above.
+  - platform: template
+    name: "Radio Test Font Cyrillic"
+    id: ${id}_radio_font_cyrillic_btn
+    icon: mdi:format-letter-case
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'id(radio).set_hero_name("Радио Москва");'
+
+  # Single-glyph reference for the left-alignment check (request 1): the long
+  # test name starts with 'L', so its leftmost glyph cell must match this one.
+  - platform: template
+    name: "Radio Test Font L"
+    id: ${id}_radio_font_l_btn
+    icon: mdi:format-letter-case
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'id(radio).set_hero_name("L");'
+
+  # Starts the voice assistant exactly like a wake word does (without needing a
+  # microphone source): fires voice_assistant.on_listening, which must bring the
+  # main page up (request 4) and arm the radio resume (request 5). The pipeline
+  # ends on its own after the no-speech timeout.
+  - platform: template
+    name: "Radio Test Voice Start"
+    id: ${id}_radio_voice_start_btn
+    icon: mdi:microphone
+    entity_category: diagnostic
+    on_press:
+      - voice_assistant.start:
+
+  # Deterministic stand-in for the interruption a real TTS answer causes: arms
+  # the resume exactly like the wake word does, drops the stream the way HA does
+  # when the announcement takes the pipeline, then lets resume_if_interrupted()
+  # re-request the station. Used to verify request 5 end-to-end without speaking.
+  - platform: template
+    name: "Radio Test Voice Interrupt"
+    id: ${id}_radio_voice_interrupt_btn
+    icon: mdi:account-voice
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'id(radio).mark_interrupted();'
+      - media_player.stop:
+          id: ${id}_media_player
+      - delay: 5s
+      - lambda: 'id(radio).resume_if_interrupted();'
+
+  # Long-name scrolling: the hero title uses SCROLL_CIRCULAR, so this string
+  # (much wider than the 440px label) must visibly move between two screenshots.
+  - platform: template
+    name: "Radio Test Font Long Name"
+    id: ${id}_radio_font_long_btn
+    icon: mdi:arrow-left-right
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'id(radio).set_hero_name("La 100 - 99.9 FM - Grupo Clarín - Buenos Aires, Argentina - a deliberately very long station name");'
+
+  # Show either radio page from Home Assistant: needed to screenshot the new UI
+  # and to exercise it without touching the glass.
+  - platform: template
+    name: "Radio Test Show Now Playing"
+    id: ${id}_radio_show_hero_btn
+    icon: mdi:image-filter-frames
+    entity_category: diagnostic
+    on_press:
+      - script.execute: wake_display
+      - lvgl.page.show:
+          lvgl_id: ${id}_lvgl
+          id: radio_page
+      - script.execute: radio_refresh
+      - script.execute: radio_fetch_if_needed
+
+  - platform: template
+    name: "Radio Test Show Station List"
+    id: ${id}_radio_show_list_btn
+    icon: mdi:playlist-music
+    entity_category: diagnostic
+    on_press:
+      - script.execute: wake_display
+      - lvgl.page.show:
+          lvgl_id: ${id}_lvgl
+          id: radio_list_page
+      - script.execute: radio_refresh
+      - script.execute: radio_fetch_if_needed
+
+  - platform: template
+    name: "Radio Test Toggle Favourite Row 0"
+    id: ${id}_radio_fav0_btn
+    icon: mdi:star
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'id(radio).row_star_click(0);'
+
+  # Test hook for the failure path (request 1): makes the next two directory
+  # GETs fail inside fetch_blocking_(), i.e. the REAL failure bookkeeping runs -
+  # worker retry, "Directory unreachable"-style status, spinner clearing and the
+  # on-screen error banner. Used to verify that a failing page shows a message
+  # instead of an endless spinner (there is no aircraft-mode switch here).
+  - platform: template
+    name: "Radio Test Force Fetch Failure"
+    id: ${id}_radio_force_fail_btn
+    icon: mdi:alert-circle-outline
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'id(radio).test_fail_fetches(2);'
+      - script.execute: radio_fetch
+
+  # Paging verification: same code path as the on-screen pager chips, so every
+  # page of the country picker / a country's station list can be walked from the
+  # API. "Radio Page Dump" reads back the *rendered* LVGL labels, so it proves
+  # what is actually on the glass (empty rows show up as <hidden>).
+  - platform: template
+    name: "Radio Test Next Page"
+    id: ${id}_radio_page_next_btn
+    icon: mdi:chevron-right
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'if (id(radio).next_page()) id(radio_fetch)->execute();'
+
+  - platform: template
+    name: "Radio Test Prev Page"
+    id: ${id}_radio_page_prev_btn
+    icon: mdi:chevron-left
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'if (id(radio).prev_page()) id(radio_fetch)->execute();'
+
+select:
+  # Radio directory test hook: fetches one of the live radio-browser views so
+  # every browse mode can be exercised (and logged) from the API.
+  - platform: template
+    name: "Radio Test Directory"
+    id: ${id}_radio_test_dir
+    entity_category: diagnostic
+    icon: mdi:radio
+    optimistic: true
+    options:
+      - "countries"
+      - "popular"
+      - "tags"
+      - "languages"
+      - "country AR"
+      - "country DE"
+      - "country ES"
+      - "country FR"
+      - "country GB"
+      - "country IT"
+      - "country US"
+      - "country RU"
+      - "tag jazz"
+      - "language english"
+    initial_option: "countries"
+    set_action:
+      - lambda: 'id(radio).test_directory(x);'
+      - script.execute: radio_fetch
+
+# ── LVGL: the two radio pages + the Apps tile ────────────────────────────────
+lvgl:
+  - id: !extend ${id}_lvgl
+    pages:
+      # Hero "now playing": swipe up (or the bottom handle) opens the list.
+      - <<: !include radio/hero.yaml
+        id: radio_page
+        on_load:
+          - script.execute: radio_refresh
+          - script.execute: radio_fetch_if_needed
+        on_swipe_up:
+          - lvgl.page.show:
+              lvgl_id: ${id}_lvgl
+              id: radio_list_page
+          - script.execute: radio_fetch_if_needed
+        on_swipe_right:
+          - lvgl.page.show:
+              lvgl_id: ${id}_lvgl
+              id: apps_page
+
+      # Station list: country/popular/category/language/favourites tabs.
+      - <<: !include radio/list.yaml
+        id: radio_list_page
+        on_load:
+          - script.execute: radio_refresh
+          - script.execute: radio_fetch_if_needed
+        on_swipe_down:
+          - lvgl.page.show:
+              lvgl_id: ${id}_lvgl
+              id: radio_page
+        on_swipe_right:
+          - lvgl.page.show:
+              lvgl_id: ${id}_lvgl
+              id: radio_page
+
+      # App tile on the Apps page.
+      # NO container: the bordered/rounded box was removed, so the tile is just a
+      # BIGGER icon (mdi_64, was mdi_32) with the app name below it. The object
+      # itself stays (transparent) so the whole icon+label region is one
+      # thumb-sized tap target.
+      - id: !extend apps_page
+        widgets:
+          - obj:
+              id: app_tile_radio
+              x: 20
+              y: 96
+              width: 210
+              height: 156
+              bg_opa: 0%
+              border_width: 0
+              radius: 0
+              pad_all: 0
+              clickable: true
+              scrollable: false
+              scrollbar_mode: "OFF"
+              on_click:
+                - lvgl.page.show:
+                    lvgl_id: ${id}_lvgl
+                    id: radio_page
+                - script.execute: radio_refresh
+              widgets:
+                - label:
+                    id: app_radio_icon
+                    x: 0
+                    y: 16
+                    width: 210
+                    height: 68
+                    text: "\U000F0439"
+                    text_font: mdi_64
+                    text_align: CENTER
+                    # Theme accent (default 0x564DCB = the weather icon colour).
+                    styles: [accent_text]
+                - label:
+                    id: app_radio_name
+                    x: 0
+                    y: 92
+                    width: 210
+                    height: 38
+                    text: "Radio"
+                    text_color: 0xFFFFFF
+                    text_align: CENTER
+                    text_font: ui_28
+
+# Register the app so the main page knows there is at least one app to show.
+esphome:
+  on_boot:
+    - priority: -100
+      then:
+        - lambda: 'id(app_count)++;'

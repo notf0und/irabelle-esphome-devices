@@ -1,0 +1,41 @@
+# ESP32-S3 16 MB flash — Waveshare ESP32-S3-Touch-AMOLED-2.16
+#
+# Same layout as ESPHome's built-in table except that the two OTA app slots are
+# 6912K instead of 7936K, which frees a 2 MB "model" partition for the ESP-SR
+# models (NSNet2 noise suppression, VADNet) that ESPHome cannot place itself.
+#
+#   otadata  0x9000    8K    unchanged
+#   phy_init 0xB000    4K    unchanged
+#   app0     0x10000   6912K unchanged offset (app slot is smaller)
+#   app1     0x6D0000  6912K moved down (was 0x7D0000)
+#   model    0xD90000  2M    NEW — raw srmodels.bin, memory-mapped by esp-sr
+#   nvs      0xF90000  448K  unchanged offset
+#
+# Keeping nvs at 0xF90000 matters: WiFi credentials and every restored
+# preference (select/number `restore_value`, AEC NLP level, ...) survive the
+# table change. The table ends exactly at 0x1000000, so no flash is wasted.
+#
+# The `model` partition holds the packed model blob produced by
+#   scripts/pack-models.sh
+# written raw at its start (esp-sr mmaps it and parses the pack format in
+# place — it is NOT a SPIFFS filesystem despite the subtype).
+#
+# WARNING: changing the partition table cannot be done over OTA from the
+# current firmware. It needs a one-time USB flash of the merged factory image
+# plus the model blob:
+#
+#   esphome compile /config/waveshare-amoled-216.yaml
+#   esptool --chip esp32s3 --port /dev/ttyACM0 write_flash \
+#       0x0      /config/.esphome/build/waveshare-amoled-216/build/firmware.factory.bin \
+#       0xD90000 /config/srmodels.bin
+#
+# After that, normal OTA updates (`esphome upload`) keep working and leave the
+# model partition untouched.
+
+# Name,   Type, SubType, Offset,   Size,     Flags
+otadata,  data, ota,     0x9000,   0x2000,
+phy_init, data, phy,     0xB000,   0x1000,
+app0,     app,  ota_0,   0x10000,  0x6C0000,
+app1,     app,  ota_1,   0x6D0000, 0x6C0000,
+model,    data, spiffs,  0xD90000, 0x200000,
+nvs,      data, nvs,     0xF90000, 0x70000,

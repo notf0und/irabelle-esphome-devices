@@ -1,0 +1,4 @@
+packages:
+  - !include base.yaml
+  - !include captive_portal.yaml
+  - !include wifi.yaml

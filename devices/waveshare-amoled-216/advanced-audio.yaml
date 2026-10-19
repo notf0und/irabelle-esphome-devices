@@ -1,0 +1,489 @@
+# Optional audio tuning + diagnostics for the Waveshare AMOLED 2.16.
+#
+# Everything here is OPTIONAL: the device runs the same audio path without it,
+# using the component defaults (AEC Gain 8, NLP aggressive, AFE type fd with
+# NSNet2, hardware AEC reference, barge-in level 200, esp_aec fallback kept).
+# What stays in the main config regardless is the *mechanism*: the restored
+# globals + the boot application of AEC gain/NLP, and the barge-in event counter
+# with its stop automation.
+#
+# It is a package of its own: add this under `packages:` in YOUR device config
+# (do not edit files in the git checkout - they are refreshed on every update):
+#
+#   packages:
+#     device: github://notf0und/irabelle-esphome-devices/devices/waveshare-amoled-216/waveshare-amoled-216.yaml@main
+#     advanced_audio: github://notf0und/irabelle-esphome-devices/devices/waveshare-amoled-216/advanced-audio.yaml@main
+#
+# The device package keeps the tuned defaults (AEC gain 8.0, NLP aggressive, fd
+# canceller, hardware reference, barge-in 200) either way; this only exposes the
+# knobs. Diagnostics below are `internal: true` (log/API only, not in HA).
+
+number:
+  - platform: template
+    name: "AEC Filter Length"
+    id: ${id}_aec_filter_length
+    entity_category: config
+    icon: mdi:filter-variant
+    min_value: 4
+    max_value: 16
+    step: 4
+    mode: slider
+    set_action:
+      then:
+        - lambda: 'id(${id}_microphone)->set_aec_filter_length((int)x);'
+    lambda: 'return (float)id(${id}_microphone)->get_aec_filter_length();'
+
+  # [software reference only] ignored with "AEC Ref Source" = hardware (default).
+
+  - platform: template
+    name: "AEC Gain"
+    id: ${id}_aec_gain
+    entity_category: config
+    icon: mdi:volume-high
+    min_value: 0.0
+    max_value: 80.0
+    step: 0.5
+    mode: slider
+    set_action:
+      then:
+        - globals.set:
+            id: aec_gain_db
+            value: !lambda 'return x;'
+        - lambda: 'id(${id}_microphone)->set_aec_gain(x);'
+    # Restored from flash by the boot lambda, so the tuned value survives reboots.
+    lambda: 'return id(aec_gain_db);'
+
+  - platform: template
+    name: "AEC Ref Gain"
+    id: ${id}_aec_ref_gain
+    entity_category: config
+    icon: mdi:amplifier
+    min_value: 0.25
+    max_value: 4.0
+    step: 0.25
+    mode: slider
+    set_action:
+      then:
+        - lambda: 'id(${id}_microphone)->set_aec_ref_gain(x);'
+    lambda: 'return id(${id}_microphone)->get_aec_ref_gain();'
+
+  - platform: template
+    name: "AEC Ref Offset"
+    id: ${id}_aec_ref_offset
+    entity_category: config
+    icon: mdi:timeline-text
+    unit_of_measurement: "samples"
+    min_value: 0
+    max_value: 512
+    step: 1
+    mode: slider
+    set_action:
+      then:
+        - lambda: 'id(${id}_microphone)->set_aec_ref_offset((int)x);'
+    lambda: 'return (float)id(${id}_microphone)->get_aec_ref_offset();'
+
+  # [software reference only] ignored with "AEC Ref Source" = hardware (default).
+
+  - platform: template
+    name: "Barge-in Level"
+    id: ${id}_barge_in_level
+    entity_category: config
+    icon: mdi:account-voice
+    min_value: 20.0
+    max_value: 5000.0
+    step: 10.0
+    mode: slider
+    set_action:
+      then:
+        - lambda: 'id(${id}_microphone)->set_barge_in_level(x);'
+    lambda: 'return id(${id}_microphone)->get_barge_in_level();'
+
+  - platform: template
+    name: "Chunk Interval"
+    id: ${id}_chunk_interval
+    entity_category: config
+    icon: mdi:timer-settings
+    min_value: 100
+    max_value: 5000
+    step: 100
+    mode: slider
+    unit_of_measurement: "ms"
+    set_action:
+      then:
+        - globals.set:
+            id: chunk_interval_ms
+            value: !lambda 'return (int)x;'
+    lambda: 'return (float)id(chunk_interval_ms);'
+
+  # [esp_aec path only] ignored while "Audio Frontend" = afe.
+
+select:
+  - platform: template
+    name: "AEC Mic Mode"
+    id: ${id}_aec_mic_mode
+    entity_category: config
+    icon: mdi:microphone-message
+    optimistic: true
+    options:
+      - "mic1"
+      - "mic2"
+      - "mix"
+      - "dual mic1"
+      - "dual mic2"
+      - "dual avg"
+    initial_option: "mic1"
+    set_action:
+      then:
+        - lambda: |-
+            if (x == "mic1") id(${id}_microphone)->set_mic_mode(0);
+            else if (x == "mic2") id(${id}_microphone)->set_mic_mode(1);
+            else if (x == "mix") id(${id}_microphone)->set_mic_mode(2);
+            else if (x == "dual mic1") id(${id}_microphone)->set_mic_mode(3);
+            else if (x == "dual mic2") id(${id}_microphone)->set_mic_mode(4);
+            else if (x == "dual avg") id(${id}_microphone)->set_mic_mode(5);
+
+  # Audio front-end: full ESP-SR AFE (default, matches the vendor firmware) or
+  # plain esp_aec. The AFE runs AEC + optional NS; micro_wake_word still does
+  # wake/VAD. It works without an esp-sr "model" partition (NS stays off).
+
+  - platform: template
+    name: "AEC Mode"
+    id: ${id}_aec_mode
+    entity_category: config
+    icon: mdi:tune
+    optimistic: true
+    options:
+      - "FD Low Cost"
+      - "SR Low Cost"
+      - "SR High Perf"
+      - "VOIP High Perf"
+      - "FD High Perf"
+    initial_option: "FD High Perf"
+    set_action:
+      then:
+        - lambda: |-
+            if (x == "FD Low Cost") id(${id}_microphone)->set_aec_mode(5);
+            else if (x == "SR Low Cost") id(${id}_microphone)->set_aec_mode(0);
+            else if (x == "SR High Perf") id(${id}_microphone)->set_aec_mode(1);
+            else if (x == "VOIP High Perf") id(${id}_microphone)->set_aec_mode(4);
+            else if (x == "FD High Perf") id(${id}_microphone)->set_aec_mode(6);
+
+  - platform: template
+    name: "AEC NLP Level"
+    id: ${id}_aec_nlp
+    entity_category: config
+    icon: mdi:tune-variant
+    optimistic: true
+    restore_value: yes
+    options:
+      - "normal"
+      - "aggressive"
+      - "very_aggressive"
+    initial_option: "aggressive"
+    set_action:
+      then:
+        - lambda: |-
+            id(aec_nlp_level) = (x == "normal") ? 0 : (x == "very_aggressive") ? 2 : 1;
+            id(${id}_microphone)->set_aec_nlp(id(aec_nlp_level));
+
+  # Dual-mic AEC staging. With the hardware reference selected this only
+  # chooses which board mic feeds the front-end (MIC1 = TDM slot 0, MIC2 =
+  # TDM slot 2); the reference is always MIC3.
+  #   mic1 / mic2 / mix                  single-canceller input selection
+  #   dual mic1 / dual mic2 / dual avg   2-mic esp_aec (AEC is recreated)
+
+  - platform: template
+    name: "AEC Ref Source"
+    id: ${id}_aec_ref_source
+    entity_category: config
+    icon: mdi:source-branch
+    optimistic: true
+    options:
+      - "hardware"
+      - "software"
+    initial_option: "hardware"
+    set_action:
+      then:
+        - lambda: |-
+            if (x == "software") id(${id}_microphone)->set_ref_source(1);
+            else id(${id}_microphone)->set_ref_source(0);
+
+  # AFE signal-chain toggles (each restarts the AFE). The AFE output is what
+  # micro_wake_word listens to, so these matter for the wake word:
+  #   AFE NS  = NSNet2 neural noise suppression (needs the model partition).
+  #             Great in noise, but it can gate quiet speech — turn it off to
+  #             check whether it is what suppresses the wake phrase.
+  #   AFE AGC = esp-sr automatic gain, targets about -3 dBFS. Use it when the
+  #             level reaching the wake word is too low, but then set
+  #             "AEC Gain" to ~1 or the output clips.
+
+  - platform: template
+    name: "AFE AGC"
+    id: ${id}_afe_agc
+    entity_category: config
+    icon: mdi:auto-fix
+    optimistic: true
+    options:
+      - "on"
+      - "off"
+    initial_option: "off"
+    set_action:
+      then:
+        - lambda: 'id(${id}_microphone)->set_afe_agc(x == "on");'
+
+  # AFE scenario type (used only when Audio Frontend = afe):
+  #   fd = full duplex (default): nonlinear echo suppression + NSNet NS when the
+  #        model blob is present. This is the working configuration here.
+  #   sr = speech recognition: NO nonlinear echo suppression (more echo leaks)
+  #   vc = NOT offered: AFE_TYPE_VC panics inside esp-sr's VOIP AEC
+  #        (dios_ssp_aec_firfilter_reset, NULL deref) with "MR" input + models,
+  #        on 2.4.3, 2.4.6 and 2.5.3 alike. The firmware also refuses it as a
+  #        safety net (see set_afe_kind).
+
+  - platform: template
+    name: "AFE NS"
+    id: ${id}_afe_ns
+    entity_category: config
+    icon: mdi:surround-sound-2-0
+    optimistic: true
+    options:
+      - "on"
+      - "off"
+    initial_option: "on"
+    set_action:
+      then:
+        - lambda: 'id(${id}_microphone)->set_afe_ns(x == "on");'
+
+  - platform: template
+    name: "AFE Type"
+    id: ${id}_afe_kind
+    entity_category: config
+    icon: mdi:account-voice
+    optimistic: true
+    options:
+      - "fd"
+      - "sr"
+    initial_option: "fd"
+    set_action:
+      then:
+        - lambda: |-
+            if (x == "sr") id(${id}_microphone)->set_afe_kind(0);
+            else id(${id}_microphone)->set_afe_kind(1);
+
+  # [esp_aec path only] the AFE picks its own AEC mode from "AFE Type".
+
+button:
+  - platform: template
+    name: "AEC Test Tone"
+    id: ${id}_aec_test_tone
+    entity_category: config
+    icon: mdi:sine-wave
+    on_press:
+      - script.execute: aec_test_tone
+
+  # True AXP2101 PMU power-off (<20 uA). The device is woken by the physical
+  # PWRON key. Note: a ~6 s PWRON hold also powers the PMU off in hardware
+  # (AXP2101 POK config), independently of this button.
+
+sensor:
+  - platform: template
+    name: "AEC In RMS"
+    id: ${id}_aec_in_rms
+    entity_category: diagnostic
+    internal: true
+    icon: mdi:sine-wave
+    update_interval: 1s
+    filters:
+      - delta: 5
+    accuracy_decimals: 0
+    lambda: 'return id(${id}_microphone)->get_aec_in_rms();'
+
+  - platform: template
+    name: "AEC Out RMS"
+    id: ${id}_aec_out_rms
+    entity_category: diagnostic
+    internal: true
+    icon: mdi:sine-wave
+    update_interval: 1s
+    filters:
+      - delta: 5
+    accuracy_decimals: 0
+    lambda: 'return id(${id}_microphone)->get_aec_out_rms();'
+
+  # [software reference only] always 0 with the hardware reference.
+
+  - platform: template
+    name: "AEC Ref Fill"
+    id: ${id}_aec_ref_fill
+    entity_category: diagnostic
+    internal: true
+    icon: mdi:chart-bell-curve-cumulative
+    unit_of_measurement: "samples"
+    update_interval: 1s
+    filters:
+      - delta: 256
+    accuracy_decimals: 0
+    lambda: 'return (float)id(${id}_microphone)->get_aec_ref_fill();'
+
+  - platform: template
+    name: "AEC Suppress dB"
+    id: ${id}_aec_suppress_db
+    entity_category: diagnostic
+    internal: true
+    icon: mdi:ear-hearing
+    unit_of_measurement: "dB"
+    update_interval: 1s
+    filters:
+      - delta: 5
+    accuracy_decimals: 1
+    lambda: 'return id(${id}_microphone)->get_aec_suppress_db();'
+
+  # [esp_aec path only] reads the esp_aec config; meaningless while the AFE runs.
+
+  - platform: template
+    name: "AEC Mode Active"
+    id: ${id}_aec_mode_active
+    entity_category: diagnostic
+    internal: true
+    icon: mdi:tune
+    update_interval: 1s
+    accuracy_decimals: 0
+    lambda: 'return (float)id(${id}_microphone)->get_aec_mode();'
+
+  # Raw ES7210 TDM slot levels. Slot order on this board is MIC1, MIC3, MIC2,
+  # MIC4 — so "Mic Ch1 RMS" (MIC3) is the on-board hardware echo reference.
+  # During playback it should rise with the speaker; when nothing plays it
+  # should sit near the noise floor. If it does NOT track playback, the
+  # hardware reference path is not wired/selected as expected.
+
+  - platform: template
+    name: "Mic Listeners"
+    id: ${id}_mic_listeners
+    entity_category: diagnostic
+    internal: true
+    icon: mdi:account-multiple
+    update_interval: 2s
+    accuracy_decimals: 0
+    filters:
+      - delta: 1
+    lambda: 'return (float)id(${id}_microphone)->get_active_listeners();'
+
+  - platform: template
+    name: "Mic Ch0 RMS (MIC1)"
+    id: ${id}_ch0_rms
+    entity_category: diagnostic
+    internal: true
+    icon: mdi:microphone
+    update_interval: 1s
+    filters:
+      - delta: 5
+    accuracy_decimals: 0
+    lambda: 'return id(${id}_microphone)->get_ch_rms(0);'
+
+  - platform: template
+    name: "Mic Ch1 RMS (MIC3 ref)"
+    id: ${id}_ch1_rms
+    entity_category: diagnostic
+    internal: true
+    icon: mdi:music-note-eighth
+    update_interval: 1s
+    filters:
+      - delta: 5
+    accuracy_decimals: 0
+    lambda: 'return id(${id}_microphone)->get_ch_rms(1);'
+
+  - platform: template
+    name: "Mic Ch2 RMS (MIC2)"
+    id: ${id}_ch2_rms
+    entity_category: diagnostic
+    internal: true
+    icon: mdi:microphone
+    update_interval: 1s
+    filters:
+      - delta: 5
+    accuracy_decimals: 0
+    lambda: 'return id(${id}_microphone)->get_ch_rms(2);'
+
+  # I2S RX plumbing counters. rx_frames must climb (~62/s at 16 kHz with
+  # 1024-sample TDM reads); rx_empty climbing means the ADC is not clocking
+  # data out. tdm: 1 = ES7210 switched to TDM 4-slot, -1 = switch failed.
+
+  - platform: template
+    name: "Mic Ch3 RMS (MIC4)"
+    id: ${id}_ch3_rms
+    entity_category: diagnostic
+    internal: true
+    icon: mdi:microphone
+    update_interval: 1s
+    filters:
+      - delta: 5
+    accuracy_decimals: 0
+    lambda: 'return id(${id}_microphone)->get_ch_rms(3);'
+
+  - platform: template
+    name: "Mic RX Frames"
+    id: ${id}_rx_frames
+    entity_category: diagnostic
+    internal: true
+    icon: mdi:counter
+    update_interval: 5s
+    filters:
+      - delta: 10
+    accuracy_decimals: 0
+    lambda: 'return (float)id(${id}_microphone)->get_rx_frames();'
+
+  - platform: template
+    name: "Mic RX Empty"
+    id: ${id}_rx_empty
+    entity_category: diagnostic
+    internal: true
+    icon: mdi:counter
+    update_interval: 5s
+    filters:
+      - delta: 1
+    accuracy_decimals: 0
+    lambda: 'return (float)id(${id}_microphone)->get_rx_empty();'
+
+  - platform: template
+    name: "Mic TDM Mode"
+    id: ${id}_tdm_mode
+    entity_category: diagnostic
+    internal: true
+    icon: mdi:format-horizontal-align-center
+    update_interval: 5s
+    accuracy_decimals: 0
+    lambda: 'return (float)id(${id}_microphone)->get_tdm_state();'
+
+text_sensor:
+  - platform: template
+    name: "AFE Models"
+    id: ${id}_afe_models
+    entity_category: diagnostic
+    icon: mdi:brain
+    update_interval: 30s
+    lambda: |-
+      return id(${id}_microphone)->get_afe_have_models() == 1 ? std::string("loaded") : std::string("none");
+
+  - platform: template
+    name: "AFE Type Active"
+    id: ${id}_afe_type_active
+    entity_category: diagnostic
+    icon: mdi:account-voice
+    update_interval: 30s
+    lambda: |-
+      return id(${id}_microphone)->get_afe_kind_effective() == 2 ? std::string("vc")
+           : id(${id}_microphone)->get_afe_kind_effective() == 0 ? std::string("sr")
+                                                                 : std::string("fd");
+
+  - platform: template
+    name: "Audio Frontend Active"
+    id: ${id}_audio_frontend_active
+    entity_category: diagnostic
+    icon: mdi:waveform
+    update_interval: 30s
+    lambda: |-
+      return id(${id}_microphone)->get_audio_frontend() == 1 ? std::string("afe") : std::string("aec");
+
+  # AFE scenario actually in use. Differs from the "AFE Type" select when "vc"
+  # was requested but no NSNet model is available: VC needs it, so the firmware
+  # silently runs "fd" instead. "AFE Models" tells whether models were found.
