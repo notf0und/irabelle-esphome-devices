@@ -99,7 +99,8 @@ flashed over USB, see its guide).
 
 I try to keep `main` working at all times; if something is in flux it is called
 out in the device guide. Releases are tagged when a device configuration
-changes in a way worth noting.
+changes in a way worth noting. The sync/release workflow (and the sanitizing
+checklist for anything added here) is in [`docs/maintenance.md`](docs/maintenance.md).
 
 ## Repository layout
 
