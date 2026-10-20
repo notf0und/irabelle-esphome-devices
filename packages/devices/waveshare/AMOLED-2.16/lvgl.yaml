@@ -52,7 +52,15 @@ lvgl:
         then:
           - if:
               condition:
-                - lambda: 'return !id(always_on_display) && !id(va_active);'
+                # va_active alone is not enough: voice_assistant on_end clears it
+                # (bounded by an 8 s timeout) while seconds of streamed TTS can
+                # still be queued, so a long answer used to blank the screen
+                # mid-sentence. Also hold the screen while any announcement is
+                # playing or its caption is still waiting for the audio to drain.
+                - lambda: |-
+                    return !id(always_on_display) && !id(va_active) &&
+                           !id(caption_active) && id(caption_hide_at) == 0 &&
+                           id(${id}_media_player).state != media_player::MEDIA_PLAYER_STATE_ANNOUNCING;
                 - light.is_on: ${id}_display_backlight
               then:
                 - lvgl.page.show:
@@ -66,7 +74,10 @@ lvgl:
                 - lvgl.pause:
               else:
                 - lambda: |-
-                    if (id(va_active))
+                    // Still talking: restart the idle clock so the screen gets a
+                    // fresh 45 s once the answer has finished playing.
+                    if (id(va_active) || id(caption_active) || id(caption_hide_at) != 0 ||
+                        id(${id}_media_player).state == media_player::MEDIA_PLAYER_STATE_ANNOUNCING)
                       lv_display_trigger_activity(id(${id}_lvgl).get_disp());
 
 script:

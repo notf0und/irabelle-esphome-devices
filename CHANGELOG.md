@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Waveshare AMOLED 2.16**: the screen no longer times out while a long TTS
+  answer is still playing (the idle check now also waits for the announcement
+  and the queued audio, not only the voice-assistant run).
+- **sh_radio**: a radio that was paused or stopped (on-screen pause button, HA,
+  media player entity) is no longer restarted after a wake-word interaction;
+  only a station that was actually playing is resumed.
+
 ## v1.0.0 — 2026-10-19
 
 First public release.

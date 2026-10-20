@@ -117,8 +117,20 @@ void ShRadio::loop() {
 
   // Latch "the station is actually audible" so the wake-word handler can arm a
   // resume even when the interruption has already changed the player state.
-  if (this->is_playing())
-    this->radio_was_playing_ = true;
+  // The latch must also drop when the station is paused/stopped by anything
+  // other than stop() (the hero play/pause button pauses, HA or the media
+  // player entity can stop it), otherwise the next wake word "resumes" a radio
+  // the user had switched off. While a resume is armed the player is expected
+  // to go IDLE (HA drops the proxy for the announcement), so keep it then, and
+  // ANNOUNCING says nothing about the radio either way.
+  if (this->player_ != nullptr) {
+    const auto st = this->player_->state;
+    if (st == media_player::MEDIA_PLAYER_STATE_PLAYING) {
+      this->radio_was_playing_ = true;
+    } else if (st != media_player::MEDIA_PLAYER_STATE_ANNOUNCING && !this->resume_pending_) {
+      this->radio_was_playing_ = false;
+    }
+  }
 
   // Remember when a "Loading ..." status appeared. list_loading() keeps the
   // spinner up for a bounded grace period even with nothing in flight (the
@@ -1364,10 +1376,9 @@ void ShRadio::mark_interrupted() {
   // selected AND it was actually heard playing. The instantaneous state is not
   // enough: by the time this edge is seen the player may already be ANNOUNCING
   // or IDLE because TTS took the pipeline / HA dropped the proxy.
+  // PAUSED is not "playing": the user paused it and expects it to stay paused.
   const bool active = this->player_ != nullptr &&
-                      (this->player_->state == media_player::MEDIA_PLAYER_STATE_PLAYING ||
-                       this->player_->state == media_player::MEDIA_PLAYER_STATE_PAUSED ||
-                       this->player_->state == media_player::MEDIA_PLAYER_STATE_ANNOUNCING);
+                      this->player_->state == media_player::MEDIA_PLAYER_STATE_PLAYING;
   this->resume_pending_ = !this->now_url_.empty() && (active || this->radio_was_playing_);
   ESP_LOGI(TAG, "Wake word: radio resume %s (state=%s)", this->resume_pending_ ? "armed" : "not needed",
            this->player_state().c_str());
